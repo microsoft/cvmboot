@@ -1,0 +1,22 @@
+#!/bin/sh
+
+PREREQ=''
+
+prereqs() {
+  echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+  prereqs
+  exit 0
+  ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+copy_exec /usr/sbin/parted /usr/sbin
+copy_exec /usr/sbin/mkfs.ext4 /usr/sbin
+copy_exec /usr/sbin/mkfs.ntfs /usr/sbin
+copy_exec /usr/sbin/mount.ntfs /usr/sbin
+copy_exec /usr/bin/truncate /usr/bin
+copy_exec /usr/sbin/losetup /usr/sbin

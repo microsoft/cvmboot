@@ -1,0 +1,35 @@
+#!/bin/sh
+
+PREREQ=''
+
+prereqs() {
+  echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+  prereqs
+  exit 0
+  ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+manual_add_modules overlay
+manual_add_modules tmpfs
+manual_add_modules dm_mod
+manual_add_modules dm_verity
+manual_add_modules dm_crypt
+copy_exec /bin/chmod /bin
+copy_exec /usr/bin/readlink /usr/bin
+copy_exec /usr/bin/dd /usr/bin
+copy_exec /usr/bin/xxd /usr/bin
+copy_exec /usr/sbin/veritysetup /usr/sbin
+copy_exec /usr/bin/sha1sum /usr/bin
+copy_exec /usr/bin/sha256sum /usr/bin
+copy_exec /usr/sbin/fdisk /usr/sbin
+copy_exec /usr/bin/tail /usr/bin
+copy_exec /usr/bin/sort /usr/bin
+copy_exec /usr/sbin/mkfs.ext4 /usr/sbin
+copy_exec /usr/sbin/cryptsetup /usr/sbin
+copy_exec /usr/bin/lsblk /usr/bin
+copy_exec /usr/bin/df /usr/bin

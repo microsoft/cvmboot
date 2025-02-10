@@ -1,0 +1,5 @@
+output
+cvmsign
+cvmsign-init
+cvmsign-verify
+cvmsign-check

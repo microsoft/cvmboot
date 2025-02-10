@@ -1,0 +1,98 @@
+#!/bin/sh
+
+PREREQ=''
+
+prereqs() {
+  echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+  prereqs
+  exit 0
+  ;;
+esac
+
+script="cvmboot_bottom2.script"
+
+##==============================================================================
+##
+## cvmboot_bottom2_panic(message)
+##
+##==============================================================================
+cvmboot_bottom2_panic()
+{
+    local message=$1
+    echo "${script}: ${message}"
+    read
+    panic "$0: panic"
+}
+
+##==============================================================================
+##
+## get_efi_origin_device()
+##
+## Get the device name of the EFI origin device (e.g., /dev/sdb1)
+##
+##==============================================================================
+get_efi_origin_device()
+{
+    local disk="/dev/sda"
+    local device=$(fdisk -l -o DEVICE,Type-UUID ${disk} | grep "C12A7328-F81F-11D2-BA4B-00A0C93EC93B" | head -1 | cut -d' ' -f1)
+    if [ "$?" != "0" ]; then
+        cvmboot_bottom2_panic "failed to get EFI origin device"
+    fi
+    echo "${device}"
+}
+
+##==============================================================================
+##
+## get_efi_cow_partition()
+##
+## Get the device name of the EFI copy-on-write partition (e.g., /dev/sdb5)
+##
+##==============================================================================
+get_efi_cow_device()
+{
+    local disk="/dev/sda"
+    local device=$(fdisk -l -o DEVICE,Type-UUID ${disk} | grep "D00E1E63-97B6-499C-9D2F-D76B8356450F" | head -1 | cut -d' ' -f1)
+    if [ "$?" != "0" ]; then
+        cvmboot_bottom2_panic "failed to get EFI cow device"
+    fi
+    echo "${device}"
+}
+
+##==============================================================================
+##
+## create_efi_snapshot()
+##
+## Create the dm-snapshot called /dev/mapper/efi_snapshot from these devices:
+##     origin=${efi_origin}
+##     cow=${efi_cow}
+##
+##==============================================================================
+create_efi_snapshot()
+{
+    local snapshot=efi_snapshot
+    local origin=$(get_efi_origin_device)
+    local cowdev=$(get_efi_cow_device)
+    local sectors=$(blockdev --getsz ${origin})
+    local efi_symlink=/dev/disk/by-uuid/D702-BE0B
+
+    dmsetup create ${snapshot} --table "0 ${sectors} snapshot ${origin} ${cowdev} N 8"
+    if [ "$?" != "0" ]; then
+        cvmboot_bottom2_panic "cannot create snapshot: ${origin}/${cowdev}"
+    fi
+
+    #if [ ! -L "${efi_symlink}" ]; then
+    #    cvmboot_bottom2_panic "$0: EFI symbolic link not found: ${efi_symlink}"
+    #fi
+
+    #rm -rf "${efi_symlink}"
+    #ln -s "/dev/mapper/efi_snapshot" "${efi_symlink}"
+    #if [ "$?" != "0" ]; then
+    #    cvmboot_bottom2_panic "cannot create EFI symlink: ${efi_symlink}"
+    #fi
+}
+
+create_efi_snapshot

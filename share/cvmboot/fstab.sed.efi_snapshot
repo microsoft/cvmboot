@@ -1,0 +1,2 @@
+s~ / ext4 .*~ / ext4 rw,noatime 0 0~g
+s~.*/boot/efi vfat.*~/dev/mapper/efi_snapshot /boot/efi vfat defaults 0 1~g

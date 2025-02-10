@@ -1,0 +1,54 @@
+EFI_TCG2_PROTOCOL.HashLogExtendEvent()
+
+https://trustedcomputinggroup.org/wp-content/uploads/EFI-Protocol-Specification-rev13-160330final.pdf
+
+    EFI_TCG2_EVENT* event;
+
+    struct tdEFI_TCG2_PROTOCOL
+    {
+      EFI_TCG2_GET_CAPABILITY                      GetCapability;
+      EFI_TCG2_GET_EVENT_LOG                       GetEventLog;
+      EFI_TCG2_HASH_LOG_EXTEND_EVENT               HashLogExtendEvent;
+      EFI_TCG2_SUBMIT_COMMAND                      SubmitCommand;
+      EFI_TCG2_GET_ACTIVE_PCR_BANKS                GetActivePcrBanks;
+      EFI_TCG2_SET_ACTIVE_PCR_BANKS                SetActivePcrBanks;
+      EFI_TCG2_GET_RESULT_OF_SET_ACTIVE_PCR_BANKS  GetResultOfSetActivePcrBanks;
+    }
+    EFI_TCG2_PROTOCOL;
+
+    See EFI_TCG2_HASH_LOG_EXTEND_EVENT in ../utils/tcg2.h
+
+    typedef UINT32 TCG_PCRINDEX;
+
+    typedef UINT32 TCG_EVENTTYPE;
+
+    typedef struct _EFI_TCG2_EVENT_HEADER
+    {
+        UINT32 HeaderSize;
+        UINT16 HeaderVersion; /* 1 */
+        TCG_PCRINDEX PCRIndex;
+        TCG_EVENTTYPE EventType;
+    }
+    PACKED
+    EFI_TCG2_EVENT_HEADER;
+
+    typedef struct _EFI_TCG2_EVENT
+    {
+        UINT32 Size;
+        EFI_TCG2_EVENT_HEADER Header;
+        UINT8 Event[1];
+    }
+    PACKED
+    EFI_TCG2_EVENT;
+
+    #define EFI_TCG2_EXTEND_ONLY 0x0000000000000001 /* flags */
+
+    typedef EFI_STATUS (EFIAPI *EFI_TCG2_HASH_LOG_EXTEND_EVENT)(
+        IN EFI_TCG2_PROTOCOL *This,
+        IN UINT64 Flags, /* 0 */
+        IN EFI_PHYSICAL_ADDRESS DataToHash,
+        IN UINT64 DataToHashLen,
+        IN EFI_TCG2_EVENT *EfiTcgEvent);
+
+EFI_TCG2_PROTOCOL.HashLogExtendEvent()
+EFI_CC_MEASUREMENT_PROTOCOL.HashLogExtendEvent()

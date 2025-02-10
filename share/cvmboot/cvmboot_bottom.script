@@ -1,0 +1,149 @@
+#!/bin/sh
+
+#
+#
+
+PREREQ=''
+
+prereqs() {
+  echo "$PREREQ"
+}
+
+case $1 in
+prereqs)
+  prereqs
+  exit 0
+  ;;
+esac
+
+script="root_ro script:"
+
+# dev-mapper names:
+# CAUTION: ${rootfs_ro} must match the same definition in verity.script
+#rootfs_ro=rootfs_ro
+#rootfs_rw=rootfs_rw
+#rootfs=rootfs
+rootfs_ro=rootfs_verity
+rootfs_rw=rootfs_crypt
+rootfs=rootfs_snapshot
+
+##==============================================================================
+##
+## cvmboot_panic(message)
+##
+##==============================================================================
+cvmboot_panic()
+{
+    local message=$1
+    echo "cvmboot_panic: ${message}"
+    read
+}
+
+##==============================================================================
+##
+## create_rootfs_rw()
+##
+## Use dm-crypt to create the upper writable rootfs layer from the last
+## partition.
+##
+## Resulting topology:
+##
+##     [ /dev/mapper/${rootfs_rw} ]
+##     [ dm-crypt driver          ]
+##     [ /dev/sda?                ]
+##
+##==============================================================================
+create_rootfs_rw()
+{
+    # Get the final parition:
+    local partition=$(ls -1 /dev/sda* | sort | tail -1)
+    local keyfile=/tmp/keyfile
+    # ATTN: remove hardcoding of /dev/sda
+    local disk="/dev/sda"
+
+    # get the upper layer partition:
+    local partition=$(fdisk -l -o DEVICE,Type-UUID ${disk} | grep -i C148C601-508C-4F28-AA23-3C1A6955F649 | head -1 | cut -d' ' -f1)
+    if [ "$?" != "0" ]; then
+        verity_panic "failed to get upper layer partition"
+    fi
+
+    # Generate the ephemeral key for dm-crypt: /tmp/keyfile
+    dd if=/dev/urandom of=${keyfile} bs=512 count=1
+    if [ ! -f "${keyfile}" ]; then
+        echo "${script}: failed to create ${keyfile}"
+        read
+        exit 0
+    fi
+
+    # open the crypto device:
+    cryptsetup open --type plain "${partition}" "${rootfs_rw}" --batch-mode --cipher=aes-xts-plain64 --key-size=512 --key-file=${keyfile}
+    if [ "$?" != "0" ]; then
+        echo "${script}: failed to open dm-crypt device: /dev/mapper/${rootfs_rw}"
+        read
+        exit 0
+    fi
+}
+
+create_rootfs_rw
+
+##==============================================================================
+##
+## create_rootfs()
+##
+## Create the dm-snapshot called /dev/mapper/${rootfs} from these devices:
+##     /dev/mapper/${rootfs_ro}
+##     /dev/mapper/${rootfs_rw}
+##
+## Resulting topology:
+##
+##                      [ /dev/mapper/${rootfs} ]
+##                      [ dm-snapshot driver    ]
+##                      /                       \
+##      *[ /dev/mapper/${rootfs_ro} ]      *[ /dev/mapper/${rootfs_rw} ]
+##       [ dm-verity driver         ]       [ dm-crypt driver          ]
+##            /           \                 [ /dev/sda? raw disk       ]
+##           /             \
+## [ /dev/sda? (ext4) ] [ /dev/sda? (verity) ]
+##
+##==============================================================================
+create_rootfs()
+{
+    local origin=/dev/mapper/${rootfs_ro}
+    local cowdev=/dev/mapper/${rootfs_rw}
+    local sectors=$(blockdev --getsz ${origin})
+    dmsetup create ${rootfs} --table "0 ${sectors} snapshot ${origin} ${cowdev} N 8"
+    if [ "$?" != "0" ]; then
+        echo "${script}: cannot create snapshot: ${rootfs_ro}/${rootfs_rw}"
+        lsblk
+        read
+        exit 0
+    fi
+}
+
+##==============================================================================
+##
+## Unmount $[rootmnt}, create the snapshot, and mount the snapshot on ${rootmnt}
+##
+##==============================================================================
+
+# Unmount the integrity-protected read-only root file system.
+umount ${rootmnt}
+if [ "$?" != "0" ]; then
+    echo "umount of ${rootmnt} failed"
+fi
+
+# Create the rootfs snapshot:
+create_rootfs
+
+# Mount the snapshot on ${rootmnt}
+mount "/dev/mapper/${rootfs}" "${rootmnt}"
+if [ "$?" != "0" ]; then
+    echo "${script}: mount failed: /dev/mapper/${rootfs} => ${rootmnt}"
+    read
+    exit 0
+fi
+
+##
+## Fixup the permissions on the newly mounted ${rootmnt}
+##
+chmod 755 "${rootmnt}"

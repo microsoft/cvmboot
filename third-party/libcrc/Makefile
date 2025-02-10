@@ -8,11 +8,9 @@ libcrc:
 	git clone https://github.com/lammertb/libcrc
 
 clean:
-	$(MAKE) -C libcrc clean
-
-distclean:
-	$(MAKE) clean
 	rm -rf libcrc
+
+distclean: clean
 
 INSTALL=install -D
 

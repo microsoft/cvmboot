@@ -3942,16 +3942,8 @@ static int _subcommand_azcopy(int argc, const char* argv[])
             ERR("failed to create directory: %s", mntdir);
     }
 
-#if 0
-    printf("url=%s\n", url);
-    printf("filename=%s\n", filename);
-    printf("tmpdir=%s\n", tmpdir);
-    printf("basedir=%s\n", basedir);
-    printf("mntdir=%s\n", mntdir);
-#endif
-
     /* Start the sparsefs driver */
-    execf(&buf, "%s %s %s", basedir, mntdir, _sparsefs_mount_path);
+    execf(&buf, "sparsefs-mount %s %s %s", basedir, mntdir);
 
     /* Run azcopy */
     {

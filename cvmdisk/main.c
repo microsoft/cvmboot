@@ -95,8 +95,6 @@ typedef struct hostname_opt
 }
 hostname_opt_t;
 
-static char _sparsefs_mount_path[PATH_MAX];
-
 static int _check_program(const char* name)
 {
     int ret = 0;
@@ -3943,7 +3941,7 @@ static int _subcommand_azcopy(int argc, const char* argv[])
     }
 
     /* Start the sparsefs driver */
-    execf(&buf, "sparsefs-mount %s %s %s", basedir, mntdir);
+    execf(&buf, "sparsefs-mount %s %s", basedir, mntdir);
 
     /* Run azcopy */
     {

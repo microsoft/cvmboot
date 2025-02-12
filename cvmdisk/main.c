@@ -3569,6 +3569,7 @@ static int _subcommand_shell(
     bool nobind)
 {
     char part[PATH_MAX];
+    buf_t buf = BUF_INITIALIZER;
 
     if (argc < 3)
     {
@@ -3580,6 +3581,8 @@ static int _subcommand_shell(
     _setup_loopback(argc, argv);
 
     const char* disk = argv[2];
+    execf(&buf, "sgdisk -e %s", disk);
+    execf(&buf, "sgdisk -s %s", disk);
 
     if (find_gpt_entry_by_type(disk, &linux_type_guid, part, NULL) < 0 ||
         __test_ext4_rootfs(part) < 0)
@@ -3604,6 +3607,7 @@ static int _subcommand_shell(
 
     /* Unmount the root file system */
     umount_disk();
+    buf_release(&buf);
 
     return 0;
 }
@@ -3660,7 +3664,6 @@ static int _subcommand_expand_root_partition(int argc, const char* argv[])
     _setup_loopback(argc, argv);
 
     disk = argv[2];
-    _check_vhd(disk);
 
     _fixup_gpt(disk);
     _expand_ext4_root_partition(disk);

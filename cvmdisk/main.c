@@ -2236,15 +2236,11 @@ static void _purge_disk(
     gpt_close(gpt);
 }
 
-static void _create_cvmboot_cpio_archive(
-    const char* disk,
-    const sha256_t* roothash,
-    const char* signtool)
+static void _create_cvmboot_cpio_archive(const char* disk, const char* signtool)
 {
     buf_t buf = BUF_INITIALIZER;
     char efi_path[PATH_MAX];
     const char* source = efi_path;
-    char conf_path[PATH_MAX];
     sig_t sig;
     const guid_t guid = efi_type_guid;
 
@@ -2253,19 +2249,6 @@ static void _create_cvmboot_cpio_archive(
 
     if (mount(source, mntdir(), "vfat", 0, NULL) < 0)
         ERR("Failed to mount EFI directory: %s => %s", source, mntdir());
-
-    // Form the path to the rootfs file:
-    paths_set_prefix("");
-    paths_get(conf_path, FILENAME_CVMBOOT_CONF, mntdir());
-    paths_set_prefix("/boot/efi");
-
-    // Find and add hash of root filesystem partition to 'rootfs' file:
-    {
-        sha256_string_t str;
-        sha256_format(&str, roothash);
-        execf(&buf, "sed -i '/^roothash=/d' %s", conf_path);
-        execf(&buf, "echo 'roothash=%s' >> %s", str.buf, conf_path);
-    }
 
     // Create cvmboot.cpio and cvmboot.cpio.sig */
     {
@@ -2437,13 +2420,7 @@ static image_state_t _get_image_state(const char* disk)
     if (_test_whether_prepared(disk) == 0)
         has_cvmboot_dir = true;
 
-    if (has_verity_partition)
-    {
-        state = IMAGE_STATE_PROTECTED;
-        goto done;
-    }
-
-    if (has_cvmboot_dir)
+    if (has_cvmboot_dir || has_verity_partition)
     {
         state = IMAGE_STATE_PREPARED;
         goto done;
@@ -2607,50 +2584,37 @@ static void _verify_disk(const char* disk)
 
 void _protect_disk(const char* disk, const char* signtool, bool verify)
 {
-    err_t err = ERR_INITIALIZER;
-    buf_t buf = BUF_INITIALIZER;
-    char linux_path[PATH_MAX];
     sha256_t roothash;
+    sha256_string_t str;
 
     if (access(disk, F_OK) != 0)
         ERR("cannot access %s", disk);
 
-    /* Find the Linux rootfs partition */
-    if (find_gpt_entry_by_type(disk, &linux_type_guid, linux_path, NULL) < 0)
-        ERR("Cannot find Linux rootfs partition: %s", disk);
-
-    // Add the verity partition for the rootfs */
+    // Compute the roothash from the hash device (created during "prepare")
     {
-        guid_t unique_guid;
-        const bool trace = true;
-        const bool progress = true;
-        int ret = 0;
+        blockdev_t* dev = NULL;
+        char path[PATH_MAX];
 
-        memset(&roothash, 0, sizeof(roothash));
+        if (find_gpt_entry_by_type(disk, &verity_type_guid, path, NULL) < 0)
+            ERR("Cannot find verity partition: disk=%s", disk);
 
-        if ((ret = verity_add_partition(
-            disk,
-            linux_path,
-            trace,
-            progress,
-            &unique_guid,
-            &roothash,
-            &err)) != 0)
-        {
-            ERR("%s: %s", err.buf, strerror(-ret));
-        }
+        if (blockdev_open(path, O_RDONLY, 0, VERITY_BLOCK_SIZE, &dev) != 0)
+            ERR("failed to open hash device: %s", path);
 
-        // verity_add_partition() reassigns the loop device
-        disk = globals.loop;
+        if (verity_get_roothash(dev, &roothash) < 0)
+            ERR("failed to get root hash from device");
+
+        blockdev_close(dev);
     }
 
+    sha256_format(&str, &roothash);
+    printf("%sroothash: %s%s\n", colors_cyan, str.buf, colors_reset);
+
     // Create the cvmboot CPIO archive on the EFI partition
-    _create_cvmboot_cpio_archive(disk, &roothash, signtool);
+    _create_cvmboot_cpio_archive(disk, signtool);
 
     if (verify)
         _verify_disk(disk);
-
-    buf_release(&buf);
 }
 
 /* ATTN: move to its own file: parsing.c? */
@@ -2830,6 +2794,74 @@ done:
     return ret;
 }
 
+static void _add_verity_partition(const char* disk, bool verify)
+{
+    err_t err = ERR_INITIALIZER;
+    buf_t buf = BUF_INITIALIZER;
+    char linux_path[PATH_MAX];
+    sha256_t roothash;
+
+    if (access(disk, F_OK) != 0)
+        ERR("cannot access %s", disk);
+
+    /* Find the Linux rootfs partition */
+    if (find_gpt_entry_by_type(disk, &linux_type_guid, linux_path, NULL) < 0)
+        ERR("Cannot find Linux rootfs partition: %s", disk);
+
+    // Add the verity partition for the rootfs */
+    {
+        guid_t unique_guid;
+        const bool trace = true;
+        const bool progress = true;
+        int ret = 0;
+
+        memset(&roothash, 0, sizeof(roothash));
+
+        if ((ret = verity_add_partition(
+            disk,
+            linux_path,
+            trace,
+            progress,
+            &unique_guid,
+            &roothash,
+            &err)) != 0)
+        {
+            ERR("%s: %s", err.buf, strerror(-ret));
+        }
+
+        // verity_add_partition() reassigns the loop device
+        disk = globals.loop;
+    }
+
+    /* Add roothash to the cvmboot.conf file */
+    {
+        char path[PATH_MAX];
+        char conf_path[PATH_MAX];
+
+        if (find_gpt_entry_by_type(disk, &efi_type_guid, path, NULL) < 0)
+            ERR("Cannot find EFI partition: %s", disk);
+
+        if (mount(path, mntdir(), "vfat", 0, NULL) < 0)
+            ERR("Failed to mount EFI directory: %s => %s", path, mntdir());
+
+        paths_set_prefix("");
+        paths_get(conf_path, FILENAME_CVMBOOT_CONF, mntdir());
+        paths_set_prefix("/boot/efi");
+
+        // Find and add hash of root filesystem partition to 'rootfs' file:
+        {
+            sha256_string_t str;
+            sha256_format(&str, &roothash);
+            execf(&buf, "sed -i '/^roothash=/d' %s", conf_path);
+            execf(&buf, "echo 'roothash=%s' >> %s", str.buf, conf_path);
+        }
+
+        umount(mntdir());
+    }
+
+    buf_release(&buf);
+}
+
 static void _prepare_disk(
     const char* disk,
     const user_opt_t* user,
@@ -2909,6 +2941,9 @@ static void _prepare_disk(
 
     _add_extra_partitions(disk, use_thin_provisioning, use_resource_disk,
         verify);
+
+    // Add the verity partition for the rootfs
+    _add_verity_partition(disk, verify);
 }
 
 static int _strip_disk(const char* disk, const char* vhd_file)
@@ -3389,9 +3424,6 @@ static int _subcommand_protect(
 
     // Sort the partitions
     execf(&buf, "sgdisk -s %s", disk);
-
-    // Purge extra partitions (if any)
-    _purge_disk(disk, false, false);
 
     // Create the verity partitions:
     _protect_disk(disk, signtool_path, verify);

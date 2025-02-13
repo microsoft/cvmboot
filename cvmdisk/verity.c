@@ -254,7 +254,7 @@ int verity_add_partition(
     {
         sha256_string_t str;
         sha256_format(&str, roothash);
-        printf("root_hash: %s\n", str.buf);
+        printf("roothash: %s\n", str.buf);
     }
 
     if (data_dev)
@@ -386,7 +386,7 @@ int verity_format(
     blockdev_t* data_dev,
     blockdev_t* hash_dev,
     const guid_t* verity_uuid,
-    sha256_t* root_hash,
+    sha256_t* roothash,
     bool trace,
     bool print_progress)
 {
@@ -652,7 +652,7 @@ int verity_format(
     {
         sha256_t h = SHA256_INITIALIZER;
         sha256_compute2(&h, salt, salt_size, last_node, blksz);
-        *root_hash = h;
+        *roothash = h;
     }
 
     /* Write the superblock */

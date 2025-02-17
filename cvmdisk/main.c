@@ -45,7 +45,6 @@
 #include "events.h"
 #include "timestamp.h"
 #include "sha256.h"
-#include "inventory.h"
 #include "path.h"
 #include "mount.h"
 #include "loop.h"
@@ -260,12 +259,19 @@ static void _dump_expected_pcr_and_log_contents(
     const sig_t* sig)
 {
     char events_path[PATH_MAX] = "";
+    char source[PATH_MAX];
 
-    mount_disk(disk, MS_RDONLY);
+    if (find_gpt_entry_by_type(disk, &efi_type_guid, source, NULL) < 0)
+        ERR("Cannot find EFI partition: %s", disk);
+
+    if (mount(source, mntdir(), "vfat", 0, NULL) < 0)
+        ERR("Failed to mount EFI directory: %s => %s", source, mntdir());
 
     /* If no events command-line argument */
     {
+        paths_set_prefix("");
         paths_get(events_path, FILENAME_EVENTS, mntdir());
+        paths_set_prefix("/boot/efi");
 
         if (access(events_path, R_OK) != 0)
             *events_path = '\0';
@@ -324,7 +330,8 @@ static void _dump_expected_pcr_and_log_contents(
         printf("%sPCR[11]=%s%s\n", colors_cyan, str.buf, colors_reset);
     }
 
-    umount_disk();
+    if (umount(mntdir()) < 0)
+        ERR("failed to unmount: %s", mntdir());
 }
 
 static void _patch_fstab(const char* disk)
@@ -2582,6 +2589,278 @@ static void _verify_disk(const char* disk)
     gpt_close(gpt);
 }
 
+static int _strip_disk(const char* disk, const char* vhd_file)
+{
+    size_t total_bytes = 0;
+    buf_t buf = BUF_INITIALIZER;
+    char loop[PATH_MAX]; /* vhd-file loopback device */
+    gpt_entry_t entries[GPT_MAX_ENTRIES];
+    size_t num_entries;
+    gpt_entry_t entries0[GPT_MAX_ENTRIES]; /* backup of original */
+    size_t rootfs_index;
+    size_t upper_index;
+    size_t num_rootfs_sectors = 0;
+    const size_t one_gb = 1024 * 1024 * 1024;
+
+    memset(&entries, 0, sizeof(entries));
+    memset(&entries0, 0, sizeof(entries0));
+
+    printf("%s>>> Stripping disk to create %s...%s\n",
+        colors_green, vhd_file, colors_reset);
+
+    /* Fixup the GPT */
+    _fixup_gpt(disk);
+
+    /* Refuse to strip disks that have no thin partitions */
+    {
+        if (find_gpt_entry_by_type(disk, &thin_data_type_guid, NULL, NULL) < 0)
+            ERR("Refusing to strip disk that has no thin data partition");
+
+        if (find_gpt_entry_by_type(disk, &thin_meta_type_guid, NULL, NULL) < 0)
+            ERR("Refusing to strip disk that has no thin meta partition");
+    }
+
+    /* Compute total required bytes for the new VHD */
+    printf("Computing required size for new vhd-file...\n");
+    {
+        gpt_t* gpt = NULL;
+
+        /* get the index of the first linux partition (rootfs) */
+        if ((rootfs_index = find_gpt_entry_by_type(
+            disk, &linux_type_guid, NULL, NULL)) < 0)
+        {
+            ERR("Cannot find Linux root partition: disk=%s", disk);
+        }
+
+        /* get the index of the optional upper layer partition */
+        upper_index = find_gpt_entry_by_type(
+            disk, &rootfs_upper_type_guid, NULL, NULL);
+
+        if (gpt_open(disk, O_RDONLY, &gpt) < 0)
+            ERR("unable to open disk: %s", disk);
+
+        gpt_get_entries(gpt, entries, &num_entries);
+        memcpy(&entries0, &entries, sizeof(entries0));
+        gpt_close(gpt);
+
+        if (num_entries == 0)
+            ERR("failed to get non-zero array of GPT entries");
+
+        /* Adjust partitions starts/ends to account for removal of rootfs */
+        for (size_t i = 0; i < num_entries; i++)
+        {
+            gpt_entry_t* e = &entries[i];
+            const size_t num_sectors = e->ending_lba - e->starting_lba + 1;
+
+            if (rootfs_index == i)
+            {
+                num_rootfs_sectors = num_sectors;
+                /* The rootfs is stripped and not counted for final VHD */
+                continue;
+            }
+
+            if (i > rootfs_index)
+            {
+                e->starting_lba -= num_rootfs_sectors;
+                e->ending_lba -= num_rootfs_sectors;
+            }
+        }
+
+        /* Calculate the bytes needed for the new vhd-file */
+        {
+            const gpt_entry_t* e = &entries[num_entries-1];
+            total_bytes = e->ending_lba * GPT_BLOCK_SIZE;
+        }
+
+        /* Make room for the GPT primary and backup structures */
+        total_bytes += sizeof(gpt->_primary);
+        total_bytes += sizeof(gpt->_backup);
+
+        /* Round to next gigabyte */
+        total_bytes = round_up_to_multiple(total_bytes, one_gb);
+    }
+
+    /* Create the VHD file of the given size */
+    {
+        path_t vhd_path;
+        cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
+
+        /* remove vhd_file from previous run */
+        execf(&buf, "rm -f %s.gz", vhd_file);
+        execf(&buf, "rm -f %s", vhd_file);
+
+        /* copy sample.vhd.gz to the vdh-file argument */
+        printf("Creating %s.gz...\n", vhd_file);
+        makepath2(&vhd_path, sharedir(), "sample.vhd.gz");
+        execf(&buf, "cp %s %s.gz", vhd_path.buf, vhd_file);
+
+        /* uncompress the file */
+        printf("Uncompressing %s.gz...\n", vhd_file);
+        execf(&buf, "gunzip %s.gz", vhd_file);
+
+        /* set the file size in gigabytes */
+        printf("Resizing %s to %zuGB...\n", vhd_file, total_bytes/one_gb);
+
+        if (cvmvhd_resize(vhd_file, total_bytes, &err) < 0)
+            ERR("%s", err.buf);
+    }
+
+    /* Setup loopback for vhd file */
+    losetup(vhd_file, loop);
+    execf(&buf, "sgdisk -e %s", loop);
+    execf(&buf, "sgdisk -s %s", loop);
+
+    /* Create partitions for new vhd-file */
+    printf("Creating partitions for new vhd-file...\n");
+    {
+        gpt_t* gpt;
+
+        if (gpt_open(loop, O_RDWR | O_EXCL, &gpt) < 0)
+            ERR("failed to open the GUID partition table: %s", vhd_file);
+
+        for (size_t i = 0; i < num_entries; i++)
+        {
+            gpt_entry_t entry = entries[i];
+            guid_t guid;
+
+            if (rootfs_index == i)
+            {
+                /* skip the partition that is being stripped */
+                continue;
+            }
+
+            guid_init_xy(&guid, entry.type_guid1, entry.type_guid2);
+
+            if (memcmp(&guid, &mbr_type_guid, sizeof(guid)) == 0)
+            {
+                printf("Adding MBR partition...\n");
+            }
+            else if (memcmp(&guid, &efi_type_guid, sizeof(guid)) == 0)
+            {
+                printf("Adding EFI partition...\n");
+            }
+            else if (memcmp(&guid, &rootfs_upper_type_guid, sizeof(guid)) == 0)
+            {
+                printf("Adding rootfs upper-layer partition...\n");
+            }
+#ifdef USE_EFI_EPHEMERAL_DISK
+            else if (memcmp(&guid, &efi_upper_type_guid, sizeof(guid)) == 0)
+            {
+                printf("Adding EFI upper-layer partition...\n");
+            }
+#endif /* USE_EFI_EPHEMERAL_DISK */
+            else if (memcmp(&guid, &thin_data_type_guid, sizeof(guid)) == 0)
+            {
+                printf("Adding thin-data partition...\n");
+            }
+            else if (memcmp(&guid, &thin_meta_type_guid, sizeof(guid)) == 0)
+            {
+                printf("Adding thin-meta partition...\n");
+            }
+            else if (memcmp(&guid, &verity_type_guid, sizeof(guid)) == 0)
+            {
+                printf("Adding verity partition...\n");
+            }
+            else
+            {
+                printf("Adding unknown partition...\n");
+            }
+
+            if (gpt_add_entry(gpt, &entry) < 0)
+                ERR("failed to add GPT entry to %s", vhd_file);
+        }
+
+        gpt_close(gpt);
+    }
+
+    /* detach loopback device for new VHD if doing sparse copy */
+    {
+        lodetach(loop);
+        *loop = '\0';
+
+        lodetach(globals.loop);
+        *globals.loop = '\0';
+    }
+
+    /* Copy partitions from disk to new vhd-file */
+    for (size_t i = 0; i < num_entries; i++)
+    {
+        /* skip copying of rootfs and of upper layer */
+        if (rootfs_index == i)
+            continue;
+
+        if (upper_index == i)
+            continue;
+
+        {
+            const gpt_entry_t e0 = entries0[i];
+            size_t offset0 = gpt_entry_offset(&e0);
+            size_t end0 = offset0 + gpt_entry_size(&e0);
+            const gpt_entry_t e = entries[i];
+            size_t offset = gpt_entry_offset(&e);
+            frag_list_t frags = FRAG_LIST_INITIALIZER;
+            frag_list_t holes = FRAG_LIST_INITIALIZER;
+            char msg[1024];
+            size_t j = i;
+
+            if (i > rootfs_index)
+                j--;
+
+            if (frags_find(globals.disk, offset0, end0, &frags, &holes) < 0)
+                ERR("frags_find() failed: %s", globals.disk);
+
+            snprintf(msg, sizeof(msg), "Copying partition %zu => %zu", i, j);
+
+            if (frags_copy(
+                &frags, globals.disk, offset0, vhd_file, offset, msg) < 0)
+            {
+                ERR("frags_copy failed(): %s => %s", globals.disk, vhd_file);
+            }
+
+            frags_release(&frags);
+            frags_release(&holes);
+        }
+    }
+
+    buf_release(&buf);
+
+    if (*loop)
+        lodetach(loop);
+
+    return 0;
+}
+
+/* assumes loop device is already setup for disk */
+static void _strip_disk_in_place(const char* disk)
+{
+    char fullpath[PATH_MAX];
+    char tmpfile[PATH_MAX];
+
+    if (!realpath(globals.disk, fullpath))
+        ERR("failed to resolve full path of %s", globals.disk);
+
+    strlcpy2(tmpfile, fullpath, "_XXXXXX", sizeof(tmpfile));
+
+    if (mkstemp(tmpfile) < 0)
+        ERR("failed to create temporary file: %s", tmpfile);
+
+    _strip_disk(disk, tmpfile);
+
+    if (*globals.loop)
+    {
+        lodetach(globals.loop);
+        *globals.loop = '\0';
+    }
+
+    printf("Moving %s => %s...\n", tmpfile, globals.disk);
+    unlink(globals.disk);
+
+    if (link(tmpfile, globals.disk) < 0)
+        ERR("link(%s, %s) failed", tmpfile, globals.disk);
+
+    unlink(tmpfile);
+}
+
 void _protect_disk(const char* disk, const char* signtool, bool verify)
 {
     sha256_t roothash;
@@ -2871,7 +3150,8 @@ static void _prepare_disk(
     bool use_resource_disk,
     bool use_thin_provisioning,
     bool verify,
-    bool expand_root_partition)
+    bool expand_root_partition,
+    bool no_strip)
 {
     char version[PATH_MAX] = "";
 
@@ -2944,278 +3224,10 @@ static void _prepare_disk(
 
     // Add the verity partition for the rootfs
     _add_verity_partition(disk, verify);
-}
 
-static int _strip_disk(const char* disk, const char* vhd_file)
-{
-    size_t total_bytes = 0;
-    buf_t buf = BUF_INITIALIZER;
-    char loop[PATH_MAX]; /* vhd-file loopback device */
-    gpt_entry_t entries[GPT_MAX_ENTRIES];
-    size_t num_entries;
-    gpt_entry_t entries0[GPT_MAX_ENTRIES]; /* backup of original */
-    size_t rootfs_index;
-    size_t upper_index;
-    size_t num_rootfs_sectors = 0;
-    const size_t one_gb = 1024 * 1024 * 1024;
-
-    memset(&entries, 0, sizeof(entries));
-    memset(&entries0, 0, sizeof(entries0));
-
-    printf("%s>>> Stripping disk to create %s...%s\n",
-        colors_green, vhd_file, colors_reset);
-
-    /* Fixup the GPT */
-    _fixup_gpt(disk);
-
-    /* Refuse to strip disks that have no thin partitions */
-    {
-        if (find_gpt_entry_by_type(disk, &thin_data_type_guid, NULL, NULL) < 0)
-            ERR("Refusing to strip disk that has no thin data partition");
-
-        if (find_gpt_entry_by_type(disk, &thin_meta_type_guid, NULL, NULL) < 0)
-            ERR("Refusing to strip disk that has no thin meta partition");
-    }
-
-    /* Compute total required bytes for the new VHD */
-    printf("Computing required size for new vhd-file...\n");
-    {
-        gpt_t* gpt = NULL;
-
-        /* get the index of the first linux partition (rootfs) */
-        if ((rootfs_index = find_gpt_entry_by_type(
-            disk, &linux_type_guid, NULL, NULL)) < 0)
-        {
-            ERR("Cannot find Linux root partition: disk=%s", disk);
-        }
-
-        /* get the index of the optional upper layer partition */
-        upper_index = find_gpt_entry_by_type(
-            disk, &rootfs_upper_type_guid, NULL, NULL);
-
-        if (gpt_open(disk, O_RDONLY, &gpt) < 0)
-            ERR("unable to open disk: %s", disk);
-
-        gpt_get_entries(gpt, entries, &num_entries);
-        memcpy(&entries0, &entries, sizeof(entries0));
-        gpt_close(gpt);
-
-        if (num_entries == 0)
-            ERR("failed to get non-zero array of GPT entries");
-
-        /* Adjust partitions starts/ends to account for removal of rootfs */
-        for (size_t i = 0; i < num_entries; i++)
-        {
-            gpt_entry_t* e = &entries[i];
-            const size_t num_sectors = e->ending_lba - e->starting_lba + 1;
-
-            if (rootfs_index == i)
-            {
-                num_rootfs_sectors = num_sectors;
-                /* The rootfs is stripped and not counted for final VHD */
-                continue;
-            }
-
-            if (i > rootfs_index)
-            {
-                e->starting_lba -= num_rootfs_sectors;
-                e->ending_lba -= num_rootfs_sectors;
-            }
-        }
-
-        /* Calculate the bytes needed for the new vhd-file */
-        {
-            const gpt_entry_t* e = &entries[num_entries-1];
-            total_bytes = e->ending_lba * GPT_BLOCK_SIZE;
-        }
-
-        /* Make room for the GPT primary and backup structures */
-        total_bytes += sizeof(gpt->_primary);
-        total_bytes += sizeof(gpt->_backup);
-
-        /* Round to next gigabyte */
-        total_bytes = round_up_to_multiple(total_bytes, one_gb);
-    }
-
-    /* Create the VHD file of the given size */
-    {
-        path_t vhd_path;
-        cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
-
-        /* remove vhd_file from previous run */
-        execf(&buf, "rm -f %s.gz", vhd_file);
-        execf(&buf, "rm -f %s", vhd_file);
-
-        /* copy sample.vhd.gz to the vdh-file argument */
-        printf("Creating %s.gz...\n", vhd_file);
-        makepath2(&vhd_path, sharedir(), "sample.vhd.gz");
-        execf(&buf, "cp %s %s.gz", vhd_path.buf, vhd_file);
-
-        /* uncompress the file */
-        printf("Uncompressing %s.gz...\n", vhd_file);
-        execf(&buf, "gunzip %s.gz", vhd_file);
-
-        /* set the file size in gigabytes */
-        printf("Resizing %s to %zuGB...\n", vhd_file, total_bytes/one_gb);
-
-        if (cvmvhd_resize(vhd_file, total_bytes, &err) < 0)
-            ERR("%s", err.buf);
-    }
-
-    /* Setup loopback for vhd file */
-    losetup(vhd_file, loop);
-    execf(&buf, "sgdisk -e %s", loop);
-    execf(&buf, "sgdisk -s %s", loop);
-
-    /* Create partitions for new vhd-file */
-    printf("Creating partitions for new vhd-file...\n");
-    {
-        gpt_t* gpt;
-
-        if (gpt_open(loop, O_RDWR | O_EXCL, &gpt) < 0)
-            ERR("failed to open the GUID partition table: %s", vhd_file);
-
-        for (size_t i = 0; i < num_entries; i++)
-        {
-            gpt_entry_t entry = entries[i];
-            guid_t guid;
-
-            if (rootfs_index == i)
-            {
-                /* skip the partition that is being stripped */
-                continue;
-            }
-
-            guid_init_xy(&guid, entry.type_guid1, entry.type_guid2);
-
-            if (memcmp(&guid, &mbr_type_guid, sizeof(guid)) == 0)
-            {
-                printf("Adding MBR partition...\n");
-            }
-            else if (memcmp(&guid, &efi_type_guid, sizeof(guid)) == 0)
-            {
-                printf("Adding EFI partition...\n");
-            }
-            else if (memcmp(&guid, &rootfs_upper_type_guid, sizeof(guid)) == 0)
-            {
-                printf("Adding rootfs upper-layer partition...\n");
-            }
-#ifdef USE_EFI_EPHEMERAL_DISK
-            else if (memcmp(&guid, &efi_upper_type_guid, sizeof(guid)) == 0)
-            {
-                printf("Adding EFI upper-layer partition...\n");
-            }
-#endif /* USE_EFI_EPHEMERAL_DISK */
-            else if (memcmp(&guid, &thin_data_type_guid, sizeof(guid)) == 0)
-            {
-                printf("Adding thin-data partition...\n");
-            }
-            else if (memcmp(&guid, &thin_meta_type_guid, sizeof(guid)) == 0)
-            {
-                printf("Adding thin-meta partition...\n");
-            }
-            else if (memcmp(&guid, &verity_type_guid, sizeof(guid)) == 0)
-            {
-                printf("Adding verity partition...\n");
-            }
-            else
-            {
-                printf("Adding unknown partition...\n");
-            }
-
-            if (gpt_add_entry(gpt, &entry) < 0)
-                ERR("failed to add GPT entry to %s", vhd_file);
-        }
-
-        gpt_close(gpt);
-    }
-
-    /* detach loopback device for new VHD if doing sparse copy */
-    {
-        lodetach(loop);
-        *loop = '\0';
-
-        lodetach(globals.loop);
-        *globals.loop = '\0';
-    }
-
-    /* Copy partitions from disk to new vhd-file */
-    for (size_t i = 0; i < num_entries; i++)
-    {
-        /* skip copying of rootfs and of upper layer */
-        if (rootfs_index == i)
-            continue;
-
-        if (upper_index == i)
-            continue;
-
-        {
-            const gpt_entry_t e0 = entries0[i];
-            size_t offset0 = gpt_entry_offset(&e0);
-            size_t end0 = offset0 + gpt_entry_size(&e0);
-            const gpt_entry_t e = entries[i];
-            size_t offset = gpt_entry_offset(&e);
-            frag_list_t frags = FRAG_LIST_INITIALIZER;
-            frag_list_t holes = FRAG_LIST_INITIALIZER;
-            char msg[1024];
-            size_t j = i;
-
-            if (i > rootfs_index)
-                j--;
-
-            if (frags_find(globals.disk, offset0, end0, &frags, &holes) < 0)
-                ERR("frags_find() failed: %s", globals.disk);
-
-            snprintf(msg, sizeof(msg), "Copying partition %zu => %zu", i, j);
-
-            if (frags_copy(
-                &frags, globals.disk, offset0, vhd_file, offset, msg) < 0)
-            {
-                ERR("frags_copy failed(): %s => %s", globals.disk, vhd_file);
-            }
-
-            frags_release(&frags);
-            frags_release(&holes);
-        }
-    }
-
-    buf_release(&buf);
-
-    if (*loop)
-        lodetach(loop);
-
-    return 0;
-}
-
-/* assumes loop device is already setup for disk */
-static void _strip_disk_in_place(const char* disk)
-{
-    char fullpath[PATH_MAX];
-    char tmpfile[PATH_MAX];
-
-    if (!realpath(globals.disk, fullpath))
-        ERR("failed to resolve full path of %s", globals.disk);
-
-    strlcpy2(tmpfile, fullpath, "_XXXXXX", sizeof(tmpfile));
-
-    if (mkstemp(tmpfile) < 0)
-        ERR("failed to create temporary file: %s", tmpfile);
-
-    _strip_disk(disk, tmpfile);
-
-    if (*globals.loop)
-    {
-        lodetach(globals.loop);
-        *globals.loop = '\0';
-    }
-
-    printf("Moving %s => %s...\n", tmpfile, globals.disk);
-    unlink(globals.disk);
-
-    if (link(tmpfile, globals.disk) < 0)
-        ERR("link(%s, %s) failed", tmpfile, globals.disk);
-
-    unlink(tmpfile);
+    // Remove uneededpartitions:
+    if (!no_strip)
+        _strip_disk_in_place(disk);
 }
 
 /*
@@ -3253,6 +3265,8 @@ Options:\n\
     --verify\n\
         Verify that the newly-created thin partition matches the original\n\
         rootfs partition.\n\
+    --no-strip\n\
+        Do not strip the EXT4 rootfs partition.\n\
 \n\
 Description:\n\
     This subcommand prepares a VM disk image for integrity protection by\n\
@@ -3292,7 +3306,8 @@ static int _subcommand_prepare(
     bool use_resource_disk,
     bool use_thin_provisioning,
     bool verify,
-    bool expand_root_partition)
+    bool expand_root_partition,
+    bool no_strip)
 {
     const char* input_disk = NULL;
     const char* output_disk = NULL;
@@ -3338,7 +3353,7 @@ static int _subcommand_prepare(
 
     _prepare_disk(disk, user, hostname, events, skip_resolv_conf,
         use_resource_disk, use_thin_provisioning, verify,
-        expand_root_partition);
+        expand_root_partition, no_strip);
 
     return 0;
 }
@@ -3350,8 +3365,6 @@ Synopsis:\n\
     Protects a VM disk image with verity protection and digital signing.\n\
 \n\
 Options:\n\
-    --no-strip\n\
-        Do not strip the EXT4 rootfs partition.\n\
     --verify\n\
         Verify the verity and thin partitions.\n\
 \n\
@@ -3374,11 +3387,7 @@ Description:\n\
     The resulting VM disk image is ready for deployment.\n\
 \n\
 \n"
-static int _subcommand_protect(
-    int argc,
-    const char* argv[],
-    bool verify,
-    bool no_strip)
+static int _subcommand_protect(int argc, const char* argv[], bool verify)
 {
     const char* disk = NULL;
     buf_t buf = BUF_INITIALIZER;
@@ -3427,10 +3436,6 @@ static int _subcommand_protect(
 
     // Create the verity partitions:
     _protect_disk(disk, signtool_path, verify);
-
-    // Strip the disk of the rootfs partition
-    if (!no_strip)
-        _strip_disk_in_place(disk);
 
     buf_release(&buf);
 
@@ -3491,8 +3496,6 @@ static int _subcommand_init(
     const char* disk = NULL;
     const char* signtool = NULL;
     char signtool_path[PATH_MAX];
-    inventory_t inv1;
-    inventory_t inv2;
 
     /* check the arguments */
     if (argc != 5)
@@ -3545,31 +3548,15 @@ static int _subcommand_init(
     // Fixup the GPT info:
     _fixup_gpt(disk);
 
-    // Get starting inventory:
-    if (delta)
-    {
-        inventory_init(&inv1);
-        get_inventory_snapshot(disk, &inv1);
-    }
-
     _prepare_disk(disk, user, hostname, events, skip_resolv_conf,
         use_resource_disk, use_thin_provisioning, verify,
-        expand_root_partition);
+        expand_root_partition, no_strip);
 
+    // Protect the disk:
+    globals.disk = output_disk;
+    losetup(globals.disk, globals.loop);
+    disk = globals.loop;
     _protect_disk(disk, signtool_path, verify);
-
-    if (delta)
-    {
-        inventory_init(&inv2);
-        get_inventory_snapshot(disk, &inv2);
-        print_inventory_delta(&inv1, &inv2);
-        inventory_release(&inv1);
-        inventory_release(&inv2);
-    }
-
-    // Strip the disk of the rootfs partition
-    if (!no_strip)
-        _strip_disk_in_place(disk);
 
     return 0;
 }
@@ -4138,10 +4125,14 @@ int main(int argc, const char* argv[])
         const char* events = NULL;
         const char* opt;
         bool expand_root_partition = false;
+        bool no_strip = false;
 
         memset(&user, 0, sizeof(user));
         memset(&hostname, 0, sizeof(hostname));
         _check_root();
+
+        if (getoption(&argc, argv, "--no-strip", NULL, &err) == 0)
+            no_strip = true;
 
         if (getoption(&argc, argv, "--skip-resolv-conf", NULL, &err) == 0)
             skip_resolv_conf = true;
@@ -4179,20 +4170,16 @@ int main(int argc, const char* argv[])
 
         return _subcommand_prepare(argc, argv, &user, &hostname, events,
             skip_resolv_conf, use_resource_disk, use_thin_provisioning,
-            verify, expand_root_partition);
+            verify, expand_root_partition, no_strip);
     }
     else if (strcmp(subcommand, "protect") == 0)
     {
         bool verify = false;
-        bool no_strip = false;
 
         _check_root();
 
         if (getoption(&argc, argv, "--verify", NULL, &err) == 0)
             verify = true;
-
-        if (getoption(&argc, argv, "--no-strip", NULL, &err) == 0)
-            no_strip = true;
 
         /* Handle old-style private.pem/public.pem parameters */
         if (argc == 5)
@@ -4205,7 +4192,7 @@ int main(int argc, const char* argv[])
             }
         }
 
-        return _subcommand_protect(argc, argv, verify, no_strip);
+        return _subcommand_protect(argc, argv, verify);
     }
     else if (strcmp(subcommand, "init") == 0)
     {

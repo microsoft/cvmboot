@@ -25,11 +25,14 @@ LDFLAGS += -L$(TOP)/common -lcvmbootcommon
 LDFLAGS += $(TOP)/third-party/install/lib64/libcrypto.a
 LDFLAGS += $(TOP)/third-party/install/lib/libcrc.a
 
-$(TARGET): timestamp $(OBJECTS)
+$(TARGET): timestamp version $(OBJECTS)
 	gcc $(CFLAGS) -o $(TARGET) $(OBJECTS) $(LDFLAGS)
 
 timestamp:
 	$(MAKE) -C .. timestamp.h
+
+version:
+	$(MAKE) -C .. version.h
 
 %.o: %.c
 	gcc -c $(CFLAGS) $(DEFINES) $(INCLUDES) -o $@ $<

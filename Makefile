@@ -9,11 +9,14 @@ include $(TOP)/defs.mak
 DIRS = third-party cencode libc utils common bootloader cvmdisk cvmvhd cvmsign akvsign sparsefs tests azcopy
 
 all: .prereqs
+	@ $(MAKE) timestamp.h
+	@ $(MAKE) version.h
 	@ $(foreach i, $(DIRS), $(MAKE) -C $(i) $(NL) )
 
 clean:
 	@ $(foreach i, $(DIRS), $(MAKE) -C $(i) clean $(NL) )
 	@ rm -rf timestamp.h
+	@ rm -rf version.h
 	@ sudo rm -rf bindist $(PACKAGE) $(PACKAGE).tar.gz
 
 distclean:
@@ -80,6 +83,9 @@ world:
 timestamp.h:
 	@git show --no-patch --format='%ci %H' `git log | head -1 | awk '{print $$2}'` | sed 's/.*/#define TIMESTAMP \"__timestamp__: &\"/g' > timestamp.h
 	@echo created "timestamp.h"
+
+version.h:
+	@cat version | sed 's/.*/#define CVMBOOT_VERSION \"&\"/g' > version.h
 
 PACKAGE=cvmboot-$(shell cat version)
 

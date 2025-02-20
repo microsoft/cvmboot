@@ -44,6 +44,7 @@
 #include "which.h"
 #include "events.h"
 #include "timestamp.h"
+#include "version.h"
 #include "sha256.h"
 #include "path.h"
 #include "mount.h"
@@ -4087,6 +4088,11 @@ int main(int argc, const char* argv[])
     else if (getoption(&argc, argv, "-h", NULL, &err) == 0)
         g_options.help = true;
 
+    if (getoption(&argc, argv, "--version", NULL, &err) == 0)
+        g_options.version = true;
+    else if (getoption(&argc, argv, "-v", NULL, &err) == 0)
+        g_options.version = true;
+
     if (getoption(&argc, argv, "--verbose", NULL, &err) == 0)
         g_options.verbose = true;
     else if (getoption(&argc, argv, "-v", NULL, &err) == 0)
@@ -4110,6 +4116,12 @@ int main(int argc, const char* argv[])
     {
         printf(USAGE, argv[0]);
         exit(1);
+    }
+
+    if (g_options.version && argc == 1)
+    {
+        printf("%s\n", CVMBOOT_VERSION);
+        exit(0);
     }
 
     const char* subcommand = argv[1];

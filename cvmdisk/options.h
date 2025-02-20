@@ -12,6 +12,7 @@ typedef struct
     bool verbose;
     bool trace;
     bool etrace;
+    bool version;
 }
 options_t;
 

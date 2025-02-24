@@ -3,10 +3,10 @@
 The cvmboot project provides ephemeral disk integrity protection for Linux
 confidential virtual machines (CVMs). The project provides two main tools.
 
-    - a disk utility for instrumenting a virtual hard disk (VHD) with disk
-      integrity protection, and
-    - a UEFI boot loader that provides the root of trust for attestable booting
-      through the trusted platform module (TPM) and
+- a disk utility for instrumenting a virtual hard disk (VHD) with disk
+  integrity protection, and
+- a UEFI boot loader that provides the root of trust for attestable booting
+  through the trusted platform module (TPM) and
 
 TCG2 log. The project offers three main benefits: (1) attestable disk integrity protection, (2) storage backend savings through thin provisioning, and (3) optimized disk write performance through utilization of the local resource disk for ephemeral writes. In short, cvmboot makes disk images attestable, smaller, and faster. Although cvmboot was created for confidential virtual machines, it offers the same benefits for conventional virtual machines. The cvmboot project is built on standard Linux tools, including dm-verity, dm-crypt, dm-thin, and dm-snapshot.
 

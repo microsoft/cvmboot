@@ -106,19 +106,7 @@ PCR11:string:"node-policy-identity":{"signer":"<node-policy-signer>","svn":"1","
 - **cvmboot** - UEFI boot loader program
 - **initramfs hooks/scripts** - sets up **verity protection** and **emphemerality** for the root partition.
 
-## Preparation
-
-TBD
-
-## Operation
-
-TBD
-
 ### Building
 
 To build everything, simply type ``make`` from the top-level directory. This
 step also installs the prerequisites. To install type ``make install``.
-
-### Preparing a VM with the cvmboot bits
-
-TBD

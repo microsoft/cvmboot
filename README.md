@@ -48,7 +48,7 @@ $ sudo cvmdisk init base.vhd image.vhd cvmsign
 This command installs the boot loader and associated components onto the EFI
 system partition (ESP) and makes various changes to the rootfs partition. The
 last argument (``cvmsign``) is the program used to sign the ``cvmboot.cpio``
-file, which is located on the EFI parition. Alternatively, one may use
+file, which is located on the EFI partition. Alternatively, one may use
 ``akssign`` for the Azure Cloud. The ``cvmdisk init`` subcommand is a
 shortcut for running ``cvmdisk prepare`` followed by ``cvmdisk protect``.
 
@@ -66,7 +66,7 @@ The ``verityboot.cpio`` file is a CPIO archive containing the following files.
 
 ```
     vmlinuz             # Linux kernel image
-    initrd              # The initial ramdisk
+    initrd              # The initial ram disk
     events              # TPM events to be extended and logged
     cvmboot.conf        # Configuration file
 ```
@@ -84,7 +84,7 @@ steps.
 * Loads ``initrd.img`` from the memory-resident ``cvmboot.cpio``
 * Starts the kernel with the ``cmdline`` and ``initrd.img`` parameters.
 
-The kernel begins executing the initial ramdisk (``initrd.img``), which is
+The kernel begins executing the initial ram disk (``initrd.img``), which is
 responsible for setting up the ephemeral rootfs and booting the system.
 
 If the ``events`` file is found in the ``cvmboot.cpio``, then the boot loader
@@ -109,7 +109,7 @@ The ``cvmdisk`` utility supports two special features.
 the ``--no-thin-provisioning`` option. This feature converts the original
 rootfs into a new thinly provisioned partition, which can be substantially
 smaller than the original. By default, the original rootfs is removed but
-can be left intact with the ``--no-strip`` option.
+can be preserved with the ``--no-strip`` option.
 
 **Resource disk usage** is enabled with the ``--use-resourcce-disk`` option.
 This feature improves performance by using the Azure resource disk as the

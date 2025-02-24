@@ -108,7 +108,7 @@ The ``cvmdisk`` utility supports two special features.
 **Thin provisioning** is performed by default but can be disabled with
 the ``--no-thin-provisioning`` option. This feature converts the original
 rootfs into a new thinly provisioned partition, which can be substantially
-smaller tan the original. By default, the original rootfs is removed but
+smaller than the original. By default, the original rootfs is removed but
 can be left intact with the ``--no-strip`` option.
 
 **Resource disk usage** is enabled with the ``--use-resourcce-disk`` option.

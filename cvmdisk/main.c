@@ -3904,6 +3904,25 @@ static int _subcommand_digest(int argc, const char* argv[])
     return 0;
 }
 
+static int _subcommand_copy(int argc, const char* argv[])
+{
+    int ret = 0;
+
+    if (argc != 4)
+    {
+        printf("Usage: %s %s <input-file> <output-file>\n", argv[0], argv[1]);
+        exit(1);
+    }
+
+    const char* infile = argv[2];
+    const char* outfile = argv[3];
+
+    if (sparse_copy(infile, outfile) < 0)
+        ERR("copy failed: %s => %s\n", infile, outfile);
+
+    return ret;
+}
+
 static int _subcommand_azcopy(int argc, const char* argv[])
 {
     int ret = 0;
@@ -4352,6 +4371,10 @@ int main(int argc, const char* argv[])
     {
         _check_program("azcopy");
         _subcommand_azcopy(argc, argv);
+    }
+    else if (strcmp(subcommand, "copy") == 0)
+    {
+        _subcommand_copy(argc, argv);
     }
     else
     {

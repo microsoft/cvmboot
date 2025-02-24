@@ -36,25 +36,21 @@ down). The rootfs is implemented by two distinct partitions.
 These two partitions are joined into a single device by ``dm-snapshot`` and
 mounted on the root directory.
 
-The ``cvmdisk`` tool is used to initialize a disk image for CVM deployment.
-The following command prepares a disk image.
-
+The ``cvmdisk`` tool initializes a virtual hard drive (VHD) image, for use
+with hypervisors or cloud-computing environments. The following command
+initializes an existing base image (``base.vhd``) and creates an initialized
+image (``image.vhd``).
 
 ```
-    $ sudo cvmdisk prepare <disk>
+$ sudo cvmdisk init base.vhd image.vhd cvmsign
 ```
 
-This command installs the boot loader and associated components on the EFI
+This command installs the boot loader and associated components onto the EFI
 system partition (ESP) and makes various changes to the rootfs partition. The
-resulting image may be published and used as a base image for the protect step,
-discussed below. The above command can also specify TPM events, users to be
-created, and the hostname for the disk.
-
-The protect step is performed by the following command.
-
-```
-    $ sudo cvmdisk protect <disk> <private-key> <public-key>
-```
+last argument (``cvmsign``) is the program used to sign the ``cvmboot.cpio``
+file, which is located on the EFI parition. Alternatively, one may use
+``akssign`` the Azure cloud environment. The ``cvmdisk init`` subcommand is a
+shortcut for running ``cvmdisk prepare`` followed by ``cvmdisk protect``.
 
 This command creates two partitions (the rootfs verity partition and the
 dm-snapshot copy-on-write partition) and signs the ESP bundle (more on this

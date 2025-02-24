@@ -23,7 +23,7 @@ benefits for conventional virtual machines as well. The cvmboot project is
 built on standard Linux tools, including dm-verity, dm-crypt, dm-thin, and
 dm-snapshot.
 
-## Operation
+## Basic Operation
 
 The boot loader and its associated components form a secure boot chain, which
 provides integrity protection and emphemerality for the root file system
@@ -97,6 +97,24 @@ into PCR-11 and added to the TCG log. The events file has the following format.
 PCR11:string:"os-image-identity":{"signer":"<filled-in-by-boot-loader>","svn":"1","diskId":"singularity.ubuntu-22.04","eventVersion":"1"}
 PCR11:string:"node-policy-identity":{"signer":"<node-policy-signer>","svn":"1","policyId":"openai-whisper","eventVersion":"1"}
 ```
+
+## Special Features
+
+The ``cvmdisk`` utility supports two special features.
+
+* Thin provisioning
+* Resource disk usage (only for use with Azure Cloud)
+
+**Thin provisioning** is performed by default but can be disabled with
+the ``--no-thin-provisioning`` option. This feature converts the original
+rootfs into a new thinly provisioned partition, which can be substantially
+smaller tan the original. By default, the original rootfs is removed but
+can be left intact with the ``--no-strip`` option.
+
+**Resource disk usage** is enabled with the ``--use-resourcce-disk`` option.
+This feature improves performance by using the Azure resource disk as the
+upper writable layer of the rootfs. The resource disk is a high-performance
+local SDD, whereas the default device is a remote storage device.
 
 ## Main components
 

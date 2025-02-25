@@ -1,6 +1,6 @@
 # cvmboot
 
-### Introduction
+## Introduction
 
 The cvmboot project provides ephemeral disk integrity protection for Linux
 confidential virtual machines (CVMs). The project provides two main tools.
@@ -23,7 +23,7 @@ benefits for conventional virtual machines as well. The cvmboot project is
 built on standard Linux tools, including dm-verity, dm-crypt, dm-thin, and
 dm-snapshot.
 
-### Basic operation
+## Basic operation
 
 The boot loader and its associated components form a secure boot chain, which
 provides integrity protection and emphemerality for the root file system
@@ -97,7 +97,7 @@ PCR11:string:"os-image-identity":{"signer":"<filled-in-by-boot-loader>","svn":"1
 PCR11:string:"node-policy-identity":{"signer":"<node-policy-signer>","svn":"1","policyId":"openai-whisper","eventVersion":"1"}
 ```
 
-### Special Features
+## Special Features
 
 The ``cvmdisk`` utility supports two special features.
 
@@ -115,7 +115,7 @@ This feature improves performance by using the Azure resource disk as the
 upper writable layer of the rootfs. The resource disk is a high-performance
 local SDD, whereas the default device is a remote storage device.
 
-### Main components
+## Main components
 
 **cvmboot** provides three main components.
 
@@ -131,16 +131,16 @@ dev-mapper targets.
 * **dm-crypt** -- encrypts the writable upper layer
 * **dm-snapshot** -- joins the upper and lower layers to form the rootfs
 
-### Building
+## Building
 
 To build everything, simply type ``make`` from the top-level directory. This
 step also installs the prerequisites. To install type ``make install``.
 
-### Quick start
+## Quick start
 
 This section explains how to get started with ``cvmboot``.
 
-#### Obtaining a VHD image
+### <ins>Obtaining a VHD image</ins>
 
 One way of obtaining a VHD image is to use the Azure CLI. The first step
 is to "create" the image using your Azure subsription. The following command
@@ -186,6 +186,6 @@ $ du -h myimage.vhd myimage2.vhd
 The image downloaded with ``cvmdisk azcopy`` consumes approximately 95% less
 space on the disk.
 
-#### <ins>Configuring the image</ins>
+### <ins>Configuring the image</ins>
 
 

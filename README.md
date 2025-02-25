@@ -140,7 +140,7 @@ step also installs the prerequisites. To install type ``make install``.
 
 This section explains how to get started with ``cvmboot``.
 
-### <ins>Obtaining a VHD image</ins>
+#### <ins>Obtaining a VHD image</ins>
 
 One way of obtaining a VHD image is to use the Azure CLI. The first step
 is to "create" the image using your Azure subsription. The following command
@@ -186,6 +186,6 @@ $ du -h myimage.vhd myimage2.vhd
 The image downloaded with ``cvmdisk azcopy`` consumes approximately 95% less
 space on the disk.
 
-### <ins>Configuring the image</ins>
+#### <ins>Configuring the image</ins>
 
 

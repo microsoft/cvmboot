@@ -258,6 +258,6 @@ creates ``cvmboot.cpio.sig``. It also prints out measurements that will
 be needed later for performing attestation.
 
 The ``cvmsign`` program is used to sign ``cvmsign.cpio``. For Azure Cloud one
-may use ``akvsign`` instead, which uses Azure Key Vault (AKV) to peform the
-signing without diclosing the private key to the local machine. Using
+may use ``akvsign`` instead, which uses Azure Key Vault (AKV) to perform the
+signing without disclosing the private key to the local machine. Using
 ``akvsign`` requires setting up login credentials with the AKV service.

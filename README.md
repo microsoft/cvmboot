@@ -148,13 +148,13 @@ creates an Ubuntu 22.04 CVM image, which is stored in Azure Cloud (don't forget
 to first install ``az`` and to login with ``az login``).
 
 ```
-$ az disk create -g <your-resource-group> -n myimage.vhd --image-reference Canonical:0001-com-ubuntu-confidential-vm-jammy:22_04-lts-cvm:latest --location eastus2
+$ az disk create -g <your-resource-group> -n base.vhd --image-reference Canonical:0001-com-ubuntu-confidential-vm-jammy:22_04-lts-cvm:latest --location eastus2
 ```
 
-The next step is to grant access to the new image (``myimage.vhd``).
+The next step is to grant access to the new image (``base.vhd``).
 
 ```
-$ az disk grant-access --access-level Read --duration-in-seconds 3600 --name myimage.vhd --resource-group mikbras-eastus2-rg
+$ az disk grant-access --access-level Read --duration-in-seconds 3600 --name base.vhd --resource-group mikbras-eastus2-rg
 {
   "accessSAS": "https://md-rdpf2p4n2h2l.z41.blob.storage.azure.net/glmkhtggmdln/abcd?sv=2018-03-28&sr=b&si=12c2f379-7c46-47a5-82b0-b9dac6d12b97&sig=RW5HD9HfMeR008FpbpVlshkWl9V8%2FyvaKQiCcG3uzOk%3D"
 }
@@ -163,7 +163,7 @@ Finally, the following command downloads the image to the local machine (the
 ``url`` was displayed by the previous command as the "accessSAS" field).
 
 ```
-azcopy copy <url>  myimage.vhd
+azcopy copy <url> base.vhd
 ```
 
 The ``azcopy`` program does not perform a sparse copy. This means that
@@ -178,14 +178,35 @@ cvmdisk azcopy <url> myuimage2.vhd
 The following command prints the space usage for the two downloaded images.
 
 ```
-$ du -h myimage.vhd myimage2.vhd
-31G     myimage.vhd
-1.7G    /mnt/myimage.vhd
+$ du -h base.vhd base2.vhd
+31G     base.vhd
+1.7G    /mnt/base.vhd
 ```
 
 The image downloaded with ``cvmdisk azcopy`` consumes approximately 95% less
 space on the disk.
 
-#### <ins>Configuring the image</ins>
+#### <ins>Customizing the base image</ins>
 
+#### <ins>Preparing and protecting the image</ins>
 
+Next we prepare the new base VHD image (``image.vhd``).
+
+```
+$ sudo cvmdisk prepare base.vhd image.vhd
+```
+
+The next step is to protect the image.
+
+```
+$ sudo cvmdisk protect image.vhd cvmsign
+roothash: 66edc2dedf7a1aecc608d49cb2185415be3c2ba8b075675f9cc8222b41a846f3
+Created /EFI/cvmboot.cpio.sig
+signer=b94fcf0d38086150b7ffcd7f18971b0909821d3835b27cf46f18084e6719b87e
+LOG[11:a9f39198dbb7e8da7491251583070a51f61b7e4c1870040405ec5758e7e90825]
+PCR[11]=9e024009db225adac339988d8a3809c6b5589530ca101516e64c3eb99e8acb31
+```
+
+This signs the boot loader payload file (``cvmboot.cpio``) and
+creates ``cvmboot.cpio.sig``. It also prints out measurements that will
+be needed later for performing attestation.

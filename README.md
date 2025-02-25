@@ -189,10 +189,11 @@ space on the disk.
 #### <ins>Customizing the base image</ins>
 
 Any customizations to the base image should be performed at this stage. To
-display the partitions in the disk, use ``fdisk``.
+display the partitions in the disk, use ``fdisk``, but be careful not to
+modify the base image with ``fdisk`` since it will corrupt the VHD file.
 
 ```
-$ fdisk base.vhd
+$ fdisk -l base.vhd
 GPT PMBR size mismatch (8388607 != 62916608) will be corrected by write.
 The backup GPT table is not on the end of the device.
 Disk base.vhd: 30 GiB, 32213303808 bytes, 62916609 sectors

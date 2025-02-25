@@ -110,7 +110,7 @@ rootfs into a new thinly provisioned partition, which can be substantially
 smaller than the original. By default, the original rootfs is removed but
 can be preserved with the ``--no-strip`` option.
 
-**Resource disk usage** is enabled with the ``--use-resourcce-disk`` option.
+**Resource disk usage** is enabled with the ``--use-resource-disk`` option.
 This feature improves performance by using the Azure resource disk as the
 upper writable layer of the rootfs. The resource disk is a high-performance
 local SDD, whereas the default device is a remote storage device.
@@ -143,7 +143,7 @@ This section explains how to get started with ``cvmboot``.
 #### <ins>Obtaining a VHD image</ins>
 
 One way of obtaining a VHD image is to use the Azure CLI. The first step
-is to "create" the image using your Azure subsription. The following command
+is to "create" the image using your Azure subscription. The following command
 creates an Ubuntu 22.04 CVM image, which is stored in Azure Cloud (don't forget
 to first install ``az`` and to login with ``az login``).
 
@@ -168,11 +168,11 @@ azcopy copy <url> base.vhd
 
 The ``azcopy`` program does not perform a sparse copy. This means that
 all zero-blocks occupy space on the local disk. Most VHDs are mostly empty
-space so we stronlgy recommend using the ``cvmdisk azcopy`` command instead,
+space so we strongly recommend using the ``cvmdisk azcopy`` command instead,
 which creates a sparse VHD image. For example:
 
 ```
-cvmdisk azcopy <url> myuimage2.vhd
+cvmdisk azcopy <url> base2.vhd
 ```
 
 The following command prints the space usage for the two downloaded images.
@@ -187,6 +187,52 @@ The image downloaded with ``cvmdisk azcopy`` consumes approximately 95% less
 space on the disk.
 
 #### <ins>Customizing the base image</ins>
+
+Any customizations to the base image should be performed at this stage. To
+display the partitions in the disk, use ``fdisk``.
+
+```
+$ fdisk base.vhd
+GPT PMBR size mismatch (8388607 != 62916608) will be corrected by write.
+The backup GPT table is not on the end of the device.
+Disk base.vhd: 30 GiB, 32213303808 bytes, 62916609 sectors
+Units: sectors of 1 * 512 = 512 bytes
+Sector size (logical/physical): 512 bytes / 512 bytes
+I/O size (minimum/optimal): 512 bytes / 512 bytes
+Disklabel type: gpt
+Disk identifier: CB28D32C-BC2A-4FD9-AD3D-FC3E7004314E
+
+Device       Start     End Sectors Size Type
+base.vhd1  2107392 8388574 6281183   3G Linux filesystem
+base.vhd14    2048   10239    8192   4M BIOS boot
+base.vhd15   10240 2107391 2097152   1G EFI System
+
+Partition table entries are not in disk order.
+```
+
+Notice that the Linux rootfs partition is only 3G while 26G of the disk
+is unused. So the first customization will be to expand the rootfs to
+consume the unused space.
+
+```
+$ sudo cvmdisk expand-root-partition base.vhd
+```
+
+The rootfs partition is now be 26G.
+
+One may now use the ``cvmdisk shell`` command to perform any special
+customizations.
+
+```
+$ sudo cvmdisk shell base.vhd
+# ls
+bin   dev  home  lib32  libx32      media  opt   root  sbin  srv  tmp  var
+boot  etc  lib   lib64  lost+found  mnt    proc  run   snap  sys  usr
+# _
+```
+
+Once shelled into the base image, additional software may be installed and
+any necessary configuration can be made.
 
 #### <ins>Preparing and protecting the image</ins>
 
@@ -210,3 +256,7 @@ PCR[11]=9e024009db225adac339988d8a3809c6b5589530ca101516e64c3eb99e8acb31
 This signs the boot loader payload file (``cvmboot.cpio``) and
 creates ``cvmboot.cpio.sig``. It also prints out measurements that will
 be needed later for performing attestation.
+
+The ``cvmsign`` program is used to sign ``cvmsign.cpio``. For Azure Cloud one
+may use ``akssign`` instead, which uses Azure Key Vault (AKV) to prevent
+disclosing the private key.

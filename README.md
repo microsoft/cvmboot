@@ -183,4 +183,5 @@ $ du -h myimage.vhd myimage2.vhd
 1.7G    /mnt/myimage.vhd
 ```
 
-The image downloaded with ``cvmdisk azcopy`` is approximately 95% smaller.
+The image downloaded with ``cvmdisk azcopy`` consumes approximately 95% less
+space on the disk.

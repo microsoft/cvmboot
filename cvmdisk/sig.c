@@ -106,7 +106,7 @@ int sig_create(
     if (load_file(filename_signerpubkeyhash,
         &signerpubkeyhash_data, &signerpubkeyhash_size) == 0)
     {
-        printf("Found: %s\n", filename_signerpubkeyhash);
+        //printf("Found: %s\n", filename_signerpubkeyhash);
     }
     else
     {
@@ -168,7 +168,7 @@ int sig_create(
         if (memcmp(signerpubkeyhash_data, &signer_hash, SHA256_SIZE) != 0)
             ERR("signer cross-check failed: %s", filename_signerpubkeyhash);
 
-        printf("Signer cross-check okay: %s\n", filename_signerpubkeyhash);
+        //printf("Signer cross-check okay: %s\n", filename_signerpubkeyhash);
     }
 
     /* Initialize the FSSIG structure */

@@ -2280,7 +2280,6 @@ static void _create_cvmboot_cpio_archive(const char* disk, const char* signtool)
             ERR("failed to change directory to %s", home);
 
         execf(&buf, "find . | cpio --create --format='newc' > %s", cpio);
-        printf("Created %s:%s\n", globals.disk, strip_mntdir(cpio));
 
         if (chdir(cwd) < 0)
             ERR("failed to change directory to %s", cwd);
@@ -2300,8 +2299,8 @@ static void _create_cvmboot_cpio_archive(const char* disk, const char* signtool)
         if (write_file(cpio_sig, &sig, sizeof(sig)) < 0)
             ERR("failed to create file: %s", cpio_sig);
 
-        printf("Created %s:%s\n", globals.disk, strip_mntdir(cpio_sig));
-        sig_dump(&sig);
+        printf("Created %s\n", strip_mntdir(cpio_sig));
+        sig_dump_signer(&sig);
 
         free(cpio_data);
     }

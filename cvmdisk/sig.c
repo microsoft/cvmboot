@@ -35,6 +35,14 @@ void sig_dump(const sig_t* p)
     printf("%smodulus_size%s=%lu\n", color, reset, p->modulus_size);
 }
 
+void sig_dump_signer(const sig_t* p)
+{
+    const char* color = colors_cyan;
+    const char* reset = colors_reset;
+    printf("%ssigner%s=", color, reset);
+    hexstr_dump(p->signer, sizeof(p->signer));
+}
+
 int sig_create(
     const void* data,
     size_t size,

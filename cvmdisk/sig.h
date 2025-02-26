@@ -15,4 +15,6 @@ int sig_create(
 
 void sig_dump(const sig_t* p);
 
+void sig_dump_signer(const sig_t* p);
+
 #endif /* _CVMBOOT_CVMDISK_SIG_H */

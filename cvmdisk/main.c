@@ -1155,10 +1155,7 @@ done:
     return ret;
 }
 
-static void _append_cmdline_option(
-    const char* disk,
-    const char* version,
-    bool force_hyperv_console)
+static void _append_cmdline_option(const char* disk, const char* version)
 {
     buf_t buf = BUF_INITIALIZER;
     buf_t boot_image = BUF_INITIALIZER;
@@ -1202,7 +1199,7 @@ static void _append_cmdline_option(
     }
 
     /* Format the linux_cmdline */
-    if (!force_hyperv_console && strstr(version, "-azure"))
+    if (strstr(version, "-azure"))
     {
         /* Add special console parameters for azure images */
         if (asprintf(
@@ -3166,8 +3163,7 @@ static void _prepare_disk(
     bool use_thin_provisioning,
     bool verify,
     bool expand_root_partition,
-    bool no_strip,
-    bool force_hyperv_console)
+    bool no_strip)
 {
     char version[PATH_MAX] = "";
 
@@ -3222,7 +3218,7 @@ static void _prepare_disk(
     _install_bootloader(disk, events);
 
     // Install Linux cmdline file onto EFI partition:
-    _append_cmdline_option(disk, version, force_hyperv_console);
+    _append_cmdline_option(disk, version);
 
     // Add user:
     if (*user->username)
@@ -3323,8 +3319,7 @@ static int _subcommand_prepare(
     bool use_thin_provisioning,
     bool verify,
     bool expand_root_partition,
-    bool no_strip,
-    bool force_hyperv_console)
+    bool no_strip)
 {
     const char* input_disk = NULL;
     const char* output_disk = NULL;
@@ -3370,7 +3365,7 @@ static int _subcommand_prepare(
 
     _prepare_disk(disk, user, hostname, events, skip_resolv_conf,
         use_resource_disk, use_thin_provisioning, verify,
-        expand_root_partition, no_strip, force_hyperv_console);
+        expand_root_partition, no_strip);
 
     return 0;
 }
@@ -3506,8 +3501,7 @@ static int _subcommand_init(
     bool use_thin_provisioning,
     bool verify,
     bool expand_root_partition,
-    bool no_strip,
-    bool force_hyperv_console)
+    bool no_strip)
 {
     const char* input_disk = NULL;
     const char* output_disk = NULL;
@@ -3568,7 +3562,7 @@ static int _subcommand_init(
 
     _prepare_disk(disk, user, hostname, events, skip_resolv_conf,
         use_resource_disk, use_thin_provisioning, verify,
-        expand_root_partition, no_strip, force_hyperv_console);
+        expand_root_partition, no_strip);
 
     // Protect the disk:
     globals.disk = output_disk;
@@ -4174,7 +4168,6 @@ int main(int argc, const char* argv[])
         const char* opt;
         bool expand_root_partition = false;
         bool no_strip = false;
-        bool force_hyperv_console = false;
 
         memset(&user, 0, sizeof(user));
         memset(&hostname, 0, sizeof(hostname));
@@ -4182,9 +4175,6 @@ int main(int argc, const char* argv[])
 
         if (getoption(&argc, argv, "--no-strip", NULL, &err) == 0)
             no_strip = true;
-
-        if (getoption(&argc, argv, "--force-hyperv-console", NULL, &err) == 0)
-            force_hyperv_console = true;
 
         if (getoption(&argc, argv, "--skip-resolv-conf", NULL, &err) == 0)
             skip_resolv_conf = true;
@@ -4222,7 +4212,7 @@ int main(int argc, const char* argv[])
 
         return _subcommand_prepare(argc, argv, &user, &hostname, events,
             skip_resolv_conf, use_resource_disk, use_thin_provisioning,
-            verify, expand_root_partition, no_strip, force_hyperv_console);
+            verify, expand_root_partition, no_strip);
     }
     else if (strcmp(subcommand, "protect") == 0)
     {
@@ -4259,7 +4249,6 @@ int main(int argc, const char* argv[])
         bool verify = false;
         bool expand_root_partition = false;
         bool no_strip = false;
-        bool force_hyperv_console = false;
 
         memset(&user, 0, sizeof(user));
         memset(&hostname, 0, sizeof(hostname));
@@ -4282,9 +4271,6 @@ int main(int argc, const char* argv[])
 
         if (getoption(&argc, argv, "--no-strip", NULL, &err) == 0)
             no_strip = true;
-
-        if (getoption(&argc, argv, "--force-hyperv-console", NULL, &err) == 0)
-            force_hyperv_console = true;
 
         if (getoption(&argc, argv, "--expand-root-partition", NULL, &err) == 0)
             expand_root_partition = true;
@@ -4321,7 +4307,7 @@ int main(int argc, const char* argv[])
 
         return _subcommand_init(argc, argv, &user, &hostname, events, delta,
             skip_resolv_conf, use_resource_disk, use_thin_provisioning,
-            verify, expand_root_partition, no_strip, force_hyperv_console);
+            verify, expand_root_partition, no_strip);
     }
     else if (strcmp(subcommand, "state") == 0)
     {

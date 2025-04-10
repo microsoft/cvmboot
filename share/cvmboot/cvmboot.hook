@@ -33,5 +33,3 @@ copy_exec /usr/sbin/mkfs.ext4 /usr/sbin
 copy_exec /usr/sbin/cryptsetup /usr/sbin
 copy_exec /usr/bin/lsblk /usr/bin
 copy_exec /usr/bin/df /usr/bin
-copy_exec /usr/bin/head /usr/bin
-copy_exec /usr/bin/cut /usr/bin

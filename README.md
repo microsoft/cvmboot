@@ -154,7 +154,7 @@ $ az disk create -g <your-resource-group> -n base.vhd --image-reference Canonica
 The next step is to grant access to the new image (``base.vhd``).
 
 ```
-$ az disk grant-access --access-level Read --duration-in-seconds 3600 --name base.vhd --resource-group <resource-group>
+$ az disk grant-access --access-level Read --duration-in-seconds 3600 --name base.vhd --resource-group mikbras-eastus2-rg
 {
   "accessSAS": "https://md-rdpf2p4n2h2l.z41.blob.storage.azure.net/glmkhtggmdln/abcd?sv=2018-03-28&sr=b&si=12c2f379-7c46-47a5-82b0-b9dac6d12b97&sig=RW5HD9HfMeR008FpbpVlshkWl9V8%2FyvaKQiCcG3uzOk%3D"
 }

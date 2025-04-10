@@ -1574,6 +1574,32 @@ static void _add_partition(
     gpt_close(gpt);
 }
 
+static void _dmsetup_remove_with_retries(const char* dmname)
+{
+    const size_t max_retries = 6;
+    unsigned int secs = 1;
+    buf_t buf = BUF_INITIALIZER;
+
+    for (size_t i = 0; max_retries; i++)
+    {
+        execf_return(&buf, "udevadm settle");
+        sleep(secs);
+
+        printf("Removing /dev/mapper/%s...\n", dmname);
+
+        if (execf_return(&buf, "dmsetup remove %s", dmname) == 0)
+        {
+            printf("Removed /dev/mapper/%s\n", dmname);
+            break;
+        }
+
+        printf("Retrying remove of /dev/mapper/%s...\n", dmname);
+        secs *= 2;
+    }
+
+    buf_release(&buf);
+}
+
 static void _initialize_thin_partitions(const char* disk)
 {
     ssize_t root_index;
@@ -1704,20 +1730,11 @@ static void _initialize_thin_partitions(const char* disk)
         printf("Saved %4.1lf%% with thin-provisioning\n", percent);
     }
 
-    /* Workaround for busy error produced by "dmsetup remove" below */
-    sleep(1);
-
     /* Remove thin volume */
-#ifdef VERBOSE_PRINTFS
-    printf("Removing /dev/mapper/%s...\n", thin_volume_name());
-#endif
-    execf(&buf, "dmsetup remove %s", thin_volume_name());
+    _dmsetup_remove_with_retries(thin_volume_name());
 
     /* Remove thin pool */
-#ifdef VERBOSE_PRINTFS
-    printf("Removing /dev/mapper/%s...\n", thin_pool_name());
-#endif
-    execf(&buf, "dmsetup remove %s", thin_pool_name());
+    _dmsetup_remove_with_retries(thin_pool_name());
 
     buf_release(&buf);
 }
@@ -1836,19 +1853,14 @@ static void _verify_thin_partitions(const char* disk)
     }
 
     /* Workaround for busy error produced by "dmsetup remove" below */
-    sleep(1);
+    execf_return(&buf, "udevadm settle");
+    sleep(3);
 
     /* Remove thin volume */
-#ifdef VERBOSE_PRINTFS
-    printf("Removing /dev/mapper/%s...\n", thin_volume_name());
-#endif
-    execf(&buf, "dmsetup remove %s", thin_volume_name());
+    _dmsetup_remove_with_retries(thin_volume_name());
 
     /* Remove thin pool */
-#ifdef VERBOSE_PRINTFS
-    printf("Removing /dev/mapper/%s...\n", thin_pool_name());
-#endif
-    execf(&buf, "dmsetup remove %s", thin_pool_name());
+    _dmsetup_remove_with_retries(thin_pool_name());
 
     buf_release(&buf);
 }

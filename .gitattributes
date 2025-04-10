@@ -1,0 +1,6 @@
+* text=auto
+*.sh text eol=lf
+/bootloader/linkcheck text eol=lf
+/third-party/openssl/openssl/** -text -eol
+/third-party/gnu-efi/gnu-efi*/** -text -eol
+/third-party/libcrc/libcrc/** -text -eol

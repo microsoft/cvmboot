@@ -214,82 +214,61 @@ done:
 }
 #endif
 
-/* Local VHD type enumeration for cvmdisk operations */
-typedef enum {
-    VHD_TYPE_UNKNOWN_LOCAL,
-    VHD_TYPE_FIXED_LOCAL,
-    VHD_TYPE_DYNAMIC_LOCAL
-} vhd_type_local_t;
-
-static vhd_type_local_t _get_vhd_type(const char* disk)
-{
-    blockdev_t* bd = NULL;
-    ssize_t byte_count;
-    size_t num_blocks;
-    const size_t block_size = 512;
-    uint8_t first_block[block_size];
-    uint8_t last_block[block_size];
-    uint8_t vhd_sig[] = { 'c', 'o', 'n', 'e', 'c', 't', 'i', 'x' };
-    vhd_type_local_t result = VHD_TYPE_UNKNOWN_LOCAL;
-
-    /* open the disk for read */
-    if (blockdev_open(disk, O_RDONLY, 0, block_size, &bd) != 0)
-        return VHD_TYPE_UNKNOWN_LOCAL;
-
-    /* get the size of the disk in bytes */
-    if ((byte_count = blockdev_get_size(bd)) < 0)
-        goto done;
-
-    /* fail if the disk is less than one block in size */
-    if (byte_count < block_size)
-        goto done;
-
-    /* fail if disk is not a multiple of the block size */
-    if ((byte_count % block_size) != 0)
-        goto done;
-
-    /* calculate the total number of disk blocks */
-    num_blocks = byte_count / block_size;
-
-    /* Read first block */
-    if (blockdev_get(bd, 0, first_block, 1) < 0)
-        goto done;
-
-    /* Read last block */
-    if (blockdev_get(bd, num_blocks - 1, last_block, 1) < 0)
-        goto done;
-
-    /* Check signatures to determine VHD type */
-    bool has_first_sig = (memcmp(first_block, vhd_sig, sizeof(vhd_sig)) == 0);
-    bool has_last_sig = (memcmp(last_block, vhd_sig, sizeof(vhd_sig)) == 0);
-
-    if (has_first_sig && has_last_sig) {
-        result = VHD_TYPE_DYNAMIC_LOCAL;
-    } else if (!has_first_sig && has_last_sig) {
-        result = VHD_TYPE_FIXED_LOCAL;
-    } else {
-        result = VHD_TYPE_UNKNOWN_LOCAL;
-    }
-
-done:
-    if (bd)
-        blockdev_close(bd);
-    
-    return result;
-}
+/* Use cvmvhd library for VHD type detection - eliminates code duplication */
 
 static void _check_vhd(const char* disk)
 {
-    vhd_type_local_t vhd_type = _get_vhd_type(disk);
+    cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
+    cvmvhd_type_t vhd_type = cvmvhd_get_type(disk, &err);
+    
+    /* Verify VHD file is properly aligned for block device operations
+     * 
+     * cvmdisk operations expect VHD files to be exact multiples of 512 bytes
+     * to ensure compatibility with block device semantics and sector-aligned I/O.
+     * This maintains compatibility with the original _check_vhd validation.
+     */
+    if (vhd_type != CVMVHD_TYPE_UNKNOWN) {
+        struct stat statbuf;
+        if (stat(disk, &statbuf) == 0) {
+            if (statbuf.st_size % 512 != 0) {
+                ERR("VHD file is not a multiple of 512 bytes: %s", disk);
+            }
+        } else {
+            ERR("Cannot stat VHD file: %s", disk);
+        }
+    }
     
     switch (vhd_type) {
-        case VHD_TYPE_FIXED_LOCAL:
+        case CVMVHD_TYPE_FIXED:
             printf("Detected VHD type: FIXED\n");
             break;
-        case VHD_TYPE_DYNAMIC_LOCAL:
+        case CVMVHD_TYPE_DYNAMIC:
             printf("Detected VHD type: DYNAMIC\n");
             
-            /* Try to read dynamic header using cvmvhd library */
+            /* Enhanced Dynamic VHD Analysis for cvmdisk dump command
+             * 
+             * Provides detailed information about dynamic VHD structure including
+             * Block Allocation Table parameters and header validation. This helps
+             * users understand the internal structure of their dynamic VHD files.
+             * 
+             * Dynamic VHD Header Analysis:
+             * - Validates "cxsparse" cookie signature for proper dynamic VHD format
+             * - Reports max BAT entries (indicates virtual disk size coverage)
+             * - Reports block size (typically 2MB for optimal performance)
+             * - Performs endianness conversion from big-endian VHD format
+             * 
+             * Diagnostic Value:
+             * - Confirms dynamic VHD format validity before processing
+             * - Helps troubleshoot VHD structure issues or corruption
+             * - Provides metadata for capacity planning and analysis
+             * - Enables verification of VHD specification compliance
+             * 
+             * VHD Specification References:
+             * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
+             *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
+             * - GitHub libvhdi VHD format documentation and analysis
+             *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
+             */
             cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
             vhd_dynamic_header_t header;
             if (cvmvhd_read_dynamic_header(disk, &header, &err) == 0) {
@@ -301,7 +280,7 @@ static void _check_vhd(const char* disk)
                 printf("Warning: Failed to read dynamic VHD header: %s\n", err.buf);
             }
             break;
-        case VHD_TYPE_UNKNOWN_LOCAL:
+        case CVMVHD_TYPE_UNKNOWN:
         default:
             ERR("Not a valid VHD file: %s", disk);
             break;
@@ -1208,7 +1187,10 @@ done:
     return ret;
 }
 
-static void _append_cmdline_option(const char* disk, const char* version)
+static void _append_cmdline_option(
+    const char* disk,
+    const char* version,
+    bool force_hyperv_console)
 {
     buf_t buf = BUF_INITIALIZER;
     buf_t boot_image = BUF_INITIALIZER;
@@ -1252,7 +1234,7 @@ static void _append_cmdline_option(const char* disk, const char* version)
     }
 
     /* Format the linux_cmdline */
-    if (strstr(version, "-azure"))
+    if (!force_hyperv_console && strstr(version, "-azure"))
     {
         /* Add special console parameters for azure images */
         if (asprintf(
@@ -3216,7 +3198,8 @@ static void _prepare_disk(
     bool use_thin_provisioning,
     bool verify,
     bool expand_root_partition,
-    bool no_strip)
+    bool no_strip,
+    bool force_hyperv_console)
 {
     char version[PATH_MAX] = "";
 
@@ -3271,7 +3254,7 @@ static void _prepare_disk(
     _install_bootloader(disk, events);
 
     // Install Linux cmdline file onto EFI partition:
-    _append_cmdline_option(disk, version);
+    _append_cmdline_option(disk, version, force_hyperv_console);
 
     // Add user:
     if (*user->username)
@@ -3372,7 +3355,8 @@ static int _subcommand_prepare(
     bool use_thin_provisioning,
     bool verify,
     bool expand_root_partition,
-    bool no_strip)
+    bool no_strip,
+    bool force_hyperv_console)
 {
     const char* input_disk = NULL;
     const char* output_disk = NULL;
@@ -3387,6 +3371,15 @@ static int _subcommand_prepare(
     input_disk = argv[2];
     output_disk = argv[3];
     _check_vhd(input_disk);
+
+    /* Check if input is a dynamic VHD - not supported by prepare workflow */
+    {
+        cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
+        if (cvmvhd_get_type(input_disk, &err) == CVMVHD_TYPE_DYNAMIC) {
+            ERR("Dynamic VHD files are not supported by the prepare workflow. "
+                "Please convert to fixed VHD format first using: cvmvhd expand %s <output-fixed.vhd>", input_disk);
+        }
+    }
 
     if (_same_file(input_disk, output_disk))
     {
@@ -3406,42 +3399,8 @@ static int _subcommand_prepare(
             ERR("unknown disk state: %s", input_disk);
     }
 
-    /* Handle dynamic VHD input by extracting to temp file first */
-    const char* source_disk = input_disk;
-    char temp_disk_path[PATH_MAX] = "";
-    bool using_temp_file = false;
-    
-    if (_get_vhd_type(input_disk) == VHD_TYPE_DYNAMIC_LOCAL) {
-        printf("Dynamic VHD detected - extracting raw image to temporary file...\n");
-        
-        /* Create temporary file for raw image with VHD footer */
-        snprintf(temp_disk_path, sizeof(temp_disk_path), "%s.temp.vhd", output_disk);
-        
-        cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
-        if (cvmvhd_extract_raw_image(input_disk, temp_disk_path, &err) < 0) {
-            ERR("Failed to extract raw image from dynamic VHD: %s", err.buf);
-        }
-        
-        /* Add VHD footer to make it a fixed VHD */
-        if (cvmvhd_append(temp_disk_path, &err) < 0) {
-            ERR("Failed to add VHD footer to extracted image: %s", err.buf);
-        }
-        
-        source_disk = temp_disk_path;
-        using_temp_file = true;
-        printf("Raw image extracted and converted to fixed VHD successfully\n");
-    }
-
-    if (sparse_copy(source_disk, output_disk) < 0)
-        ERR("copy failed: %s => %s\n", source_disk, output_disk);
-    
-    /* Clean up temporary file if used */
-    if (using_temp_file) {
-        printf("Cleaning up temporary file: %s\n", temp_disk_path);
-        if (unlink(temp_disk_path) < 0) {
-            fprintf(stderr, "Warning: Failed to remove temporary file %s\n", temp_disk_path);
-        }
-    }
+    if (sparse_copy(input_disk, output_disk) < 0)
+        ERR("copy failed: %s => %s\n", input_disk, output_disk);
 
     globals.disk = output_disk;
     losetup(globals.disk, globals.loop);
@@ -3452,7 +3411,7 @@ static int _subcommand_prepare(
 
     _prepare_disk(disk, user, hostname, events, skip_resolv_conf,
         use_resource_disk, use_thin_provisioning, verify,
-        expand_root_partition, no_strip);
+        expand_root_partition, no_strip, force_hyperv_console);
 
     return 0;
 }
@@ -3500,6 +3459,16 @@ static int _subcommand_protect(int argc, const char* argv[], bool verify)
     }
 
     _check_vhd(argv[2]);
+
+    /* Check if input is a dynamic VHD - not supported by protect workflow */
+    {
+        cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
+        if (cvmvhd_get_type(argv[2], &err) == CVMVHD_TYPE_DYNAMIC) {
+            ERR("Dynamic VHD files are not supported by the protect workflow. "
+                "Please use a prepared fixed VHD or convert first using: cvmvhd expand %s <output-fixed.vhd>", argv[2]);
+        }
+    }
+
     _setup_loopback(argc, argv);
 
     disk = argv[2];
@@ -3588,7 +3557,8 @@ static int _subcommand_init(
     bool use_thin_provisioning,
     bool verify,
     bool expand_root_partition,
-    bool no_strip)
+    bool no_strip,
+    bool force_hyperv_console)
 {
     const char* input_disk = NULL;
     const char* output_disk = NULL;
@@ -3607,6 +3577,15 @@ static int _subcommand_init(
     output_disk = argv[3];
     signtool = argv[4];
     _check_vhd(input_disk);
+
+    /* Check if input is a dynamic VHD - not supported by init workflow */
+    {
+        cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
+        if (cvmvhd_get_type(input_disk, &err) == CVMVHD_TYPE_DYNAMIC) {
+            ERR("Dynamic VHD files are not supported by the init workflow. "
+                "Please convert to fixed VHD format first using: cvmvhd expand %s <output-fixed.vhd>", input_disk);
+        }
+    }
 
     if (_same_file(input_disk, output_disk))
     {
@@ -3649,7 +3628,7 @@ static int _subcommand_init(
 
     _prepare_disk(disk, user, hostname, events, skip_resolv_conf,
         use_resource_disk, use_thin_provisioning, verify,
-        expand_root_partition, no_strip);
+        expand_root_partition, no_strip, force_hyperv_console);
 
     // Protect the disk:
     globals.disk = output_disk;
@@ -4255,6 +4234,7 @@ int main(int argc, const char* argv[])
         const char* opt;
         bool expand_root_partition = false;
         bool no_strip = false;
+        bool force_hyperv_console = false;
 
         memset(&user, 0, sizeof(user));
         memset(&hostname, 0, sizeof(hostname));
@@ -4262,6 +4242,9 @@ int main(int argc, const char* argv[])
 
         if (getoption(&argc, argv, "--no-strip", NULL, &err) == 0)
             no_strip = true;
+
+        if (getoption(&argc, argv, "--force-hyperv-console", NULL, &err) == 0)
+            force_hyperv_console = true;
 
         if (getoption(&argc, argv, "--skip-resolv-conf", NULL, &err) == 0)
             skip_resolv_conf = true;
@@ -4299,7 +4282,7 @@ int main(int argc, const char* argv[])
 
         return _subcommand_prepare(argc, argv, &user, &hostname, events,
             skip_resolv_conf, use_resource_disk, use_thin_provisioning,
-            verify, expand_root_partition, no_strip);
+            verify, expand_root_partition, no_strip, force_hyperv_console);
     }
     else if (strcmp(subcommand, "protect") == 0)
     {
@@ -4336,6 +4319,7 @@ int main(int argc, const char* argv[])
         bool verify = false;
         bool expand_root_partition = false;
         bool no_strip = false;
+        bool force_hyperv_console = false;
 
         memset(&user, 0, sizeof(user));
         memset(&hostname, 0, sizeof(hostname));
@@ -4358,6 +4342,9 @@ int main(int argc, const char* argv[])
 
         if (getoption(&argc, argv, "--no-strip", NULL, &err) == 0)
             no_strip = true;
+
+        if (getoption(&argc, argv, "--force-hyperv-console", NULL, &err) == 0)
+            force_hyperv_console = true;
 
         if (getoption(&argc, argv, "--expand-root-partition", NULL, &err) == 0)
             expand_root_partition = true;
@@ -4394,7 +4381,7 @@ int main(int argc, const char* argv[])
 
         return _subcommand_init(argc, argv, &user, &hostname, events, delta,
             skip_resolv_conf, use_resource_disk, use_thin_provisioning,
-            verify, expand_root_partition, no_strip);
+            verify, expand_root_partition, no_strip, force_hyperv_console);
     }
     else if (strcmp(subcommand, "state") == 0)
     {

@@ -158,6 +158,69 @@ static int _subcommand_remove(int argc, const char* argv[])
     return 0;
 }
 
+static int _subcommand_extract(int argc, const char* argv[])
+{
+    cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
+
+    /* Check usage */
+    if (argc != 4)
+    {
+        fprintf(stderr, "Usage: %s %s <vhd-file> <raw-file>\n", g_arg0, g_arg1);
+        exit(1);
+    }
+
+    const char* vhd_file = argv[2];
+    const char* raw_file = argv[3];
+
+    if (cvmvhd_extract_raw_image(vhd_file, raw_file, &err) < 0)
+        _err("%s", err.buf);
+
+    printf("Successfully extracted raw image from %s to %s\n", vhd_file, raw_file);
+    return 0;
+}
+
+static int _subcommand_convert(int argc, const char* argv[])
+{
+    cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
+
+    /* Check usage */
+    if (argc != 4)
+    {
+        fprintf(stderr, "Usage: %s %s <input-vhd> <output-vhd>\n", g_arg0, g_arg1);
+        fprintf(stderr, "Convert dynamic VHD to fixed VHD\n");
+        exit(1);
+    }
+
+    const char* input_vhd = argv[2];
+    const char* output_vhd = argv[3];
+
+    /* Check if input is a dynamic VHD */
+    cvmvhd_type_t vhd_type = cvmvhd_get_type(input_vhd, &err);
+    if (vhd_type == CVMVHD_TYPE_UNKNOWN) {
+        _err("Not a valid VHD file: %s", input_vhd);
+    }
+    
+    if (vhd_type == CVMVHD_TYPE_FIXED) {
+        printf("Input is already a fixed VHD, copying to output...\n");
+        /* TODO: Could add file copy here or just use extract+append */
+    }
+
+    printf("Converting dynamic VHD to fixed VHD...\n");
+    
+    /* Extract raw image from dynamic VHD */
+    if (cvmvhd_extract_raw_image(input_vhd, output_vhd, &err) < 0) {
+        _err("Failed to extract raw image: %s", err.buf);
+    }
+    
+    /* Add VHD footer to make it a fixed VHD */
+    if (cvmvhd_append(output_vhd, &err) < 0) {
+        _err("Failed to add VHD footer: %s", err.buf);
+    }
+
+    printf("Successfully converted %s to fixed VHD: %s\n", input_vhd, output_vhd);
+    return 0;
+}
+
 #define USAGE \
 "Usage: %s subcommand arguments...\n" \
 "\n" \
@@ -167,6 +230,8 @@ static int _subcommand_remove(int argc, const char* argv[])
 "    append <vhd-file> -- append VHD trailer to file (or replace)\n" \
 "    remove <vhd-file> -- remove VHD trailer from VHD file (if any)\n" \
 "    dump <vhd-file> -- dump VHD trailer\n" \
+"    extract <vhd-file> <raw-file> -- extract raw image from dynamic VHD\n" \
+"    convert <input-vhd> <output-vhd> -- convert dynamic VHD to fixed VHD\n" \
 "\n"
 
 int main(int argc, const char* argv[])
@@ -199,6 +264,14 @@ int main(int argc, const char* argv[])
     else if (strcmp(argv[1], "remove") == 0)
     {
         return _subcommand_remove(argc, argv);
+    }
+    else if (strcmp(argv[1], "extract") == 0)
+    {
+        return _subcommand_extract(argc, argv);
+    }
+    else if (strcmp(argv[1], "convert") == 0)
+    {
+        return _subcommand_convert(argc, argv);
     }
     else
     {

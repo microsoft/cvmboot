@@ -214,45 +214,98 @@ done:
 }
 #endif
 
-static void _check_vhd(const char* disk)
+/* Local VHD type enumeration for cvmdisk operations */
+typedef enum {
+    VHD_TYPE_UNKNOWN_LOCAL,
+    VHD_TYPE_FIXED_LOCAL,
+    VHD_TYPE_DYNAMIC_LOCAL
+} vhd_type_local_t;
+
+static vhd_type_local_t _get_vhd_type(const char* disk)
 {
     blockdev_t* bd = NULL;
     ssize_t byte_count;
-    buf_t buf = BUF_INITIALIZER;
     size_t num_blocks;
     const size_t block_size = 512;
-    uint8_t block[block_size];
+    uint8_t first_block[block_size];
+    uint8_t last_block[block_size];
     uint8_t vhd_sig[] = { 'c', 'o', 'n', 'e', 'c', 't', 'i', 'x' };
+    vhd_type_local_t result = VHD_TYPE_UNKNOWN_LOCAL;
 
     /* open the disk for read */
     if (blockdev_open(disk, O_RDONLY, 0, block_size, &bd) != 0)
-        ERR("VHD not found: %s", disk);
+        return VHD_TYPE_UNKNOWN_LOCAL;
 
     /* get the size of the disk in bytes */
     if ((byte_count = blockdev_get_size(bd)) < 0)
-        ERR("cannot determine VHD size: %s", disk);
+        goto done;
 
     /* fail if the disk is less than one block in size */
     if (byte_count < block_size)
-        ERR("VHD is shorter than %zu bytes: %s", block_size, disk);
+        goto done;
 
     /* fail if disk is not a multiple of the block size */
     if ((byte_count % block_size) != 0)
-        ERR("VHD is not a multiple of %zu: %s", block_size, disk);
+        goto done;
 
     /* calculate the total number of disk blocks */
     num_blocks = byte_count / block_size;
 
-    /* If unable to read final block of file */
-    if (blockdev_get(bd, num_blocks - 1, block, 1) < 0)
-        ERR("cannot read last block of VHD: %s", disk);
+    /* Read first block */
+    if (blockdev_get(bd, 0, first_block, 1) < 0)
+        goto done;
 
-    /* If the last block is a VHD trailer, then remove from total size */
-    if (memcmp(block, vhd_sig, sizeof(vhd_sig)) != 0)
-        ERR("Not a VHD file (missing VHD trailer): %s", disk);
+    /* Read last block */
+    if (blockdev_get(bd, num_blocks - 1, last_block, 1) < 0)
+        goto done;
 
-    blockdev_close(bd);
-    buf_release(&buf);
+    /* Check signatures to determine VHD type */
+    bool has_first_sig = (memcmp(first_block, vhd_sig, sizeof(vhd_sig)) == 0);
+    bool has_last_sig = (memcmp(last_block, vhd_sig, sizeof(vhd_sig)) == 0);
+
+    if (has_first_sig && has_last_sig) {
+        result = VHD_TYPE_DYNAMIC_LOCAL;
+    } else if (!has_first_sig && has_last_sig) {
+        result = VHD_TYPE_FIXED_LOCAL;
+    } else {
+        result = VHD_TYPE_UNKNOWN_LOCAL;
+    }
+
+done:
+    if (bd)
+        blockdev_close(bd);
+    
+    return result;
+}
+
+static void _check_vhd(const char* disk)
+{
+    vhd_type_local_t vhd_type = _get_vhd_type(disk);
+    
+    switch (vhd_type) {
+        case VHD_TYPE_FIXED_LOCAL:
+            printf("Detected VHD type: FIXED\n");
+            break;
+        case VHD_TYPE_DYNAMIC_LOCAL:
+            printf("Detected VHD type: DYNAMIC\n");
+            
+            /* Try to read dynamic header using cvmvhd library */
+            cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
+            vhd_dynamic_header_t header;
+            if (cvmvhd_read_dynamic_header(disk, &header, &err) == 0) {
+                printf("Dynamic VHD details:\n");
+                printf("  Header signature: %.8s\n", (char*)header.cookie);
+                printf("  Max BAT entries: %u\n", header.max_table_entries);
+                printf("  Block size: %u bytes\n", header.block_size);
+            } else {
+                printf("Warning: Failed to read dynamic VHD header: %s\n", err.buf);
+            }
+            break;
+        case VHD_TYPE_UNKNOWN_LOCAL:
+        default:
+            ERR("Not a valid VHD file: %s", disk);
+            break;
+    }
 }
 
 static void _dump_expected_pcr_and_log_contents(
@@ -3353,8 +3406,42 @@ static int _subcommand_prepare(
             ERR("unknown disk state: %s", input_disk);
     }
 
-    if (sparse_copy(input_disk, output_disk) < 0)
-        ERR("copy failed: %s => %s\n", input_disk, output_disk);
+    /* Handle dynamic VHD input by extracting to temp file first */
+    const char* source_disk = input_disk;
+    char temp_disk_path[PATH_MAX] = "";
+    bool using_temp_file = false;
+    
+    if (_get_vhd_type(input_disk) == VHD_TYPE_DYNAMIC_LOCAL) {
+        printf("Dynamic VHD detected - extracting raw image to temporary file...\n");
+        
+        /* Create temporary file for raw image with VHD footer */
+        snprintf(temp_disk_path, sizeof(temp_disk_path), "%s.temp.vhd", output_disk);
+        
+        cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
+        if (cvmvhd_extract_raw_image(input_disk, temp_disk_path, &err) < 0) {
+            ERR("Failed to extract raw image from dynamic VHD: %s", err.buf);
+        }
+        
+        /* Add VHD footer to make it a fixed VHD */
+        if (cvmvhd_append(temp_disk_path, &err) < 0) {
+            ERR("Failed to add VHD footer to extracted image: %s", err.buf);
+        }
+        
+        source_disk = temp_disk_path;
+        using_temp_file = true;
+        printf("Raw image extracted and converted to fixed VHD successfully\n");
+    }
+
+    if (sparse_copy(source_disk, output_disk) < 0)
+        ERR("copy failed: %s => %s\n", source_disk, output_disk);
+    
+    /* Clean up temporary file if used */
+    if (using_temp_file) {
+        printf("Cleaning up temporary file: %s\n", temp_disk_path);
+        if (unlink(temp_disk_path) < 0) {
+            fprintf(stderr, "Warning: Failed to remove temporary file %s\n", temp_disk_path);
+        }
+    }
 
     globals.disk = output_disk;
     losetup(globals.disk, globals.loop);

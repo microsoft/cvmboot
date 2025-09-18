@@ -9,6 +9,7 @@
 #include <sys/random.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <stdlib.h>
 #include "cvmvhd.h"
 
 /*
@@ -609,6 +610,46 @@ int cvmvhd_dump(const char* vhd_file, cvmvhd_error_t* err)
     }
 
     _dump_vhd_footer(&footer);
+    
+    /* Check if this is a dynamic VHD and dump additional info */
+    cvmvhd_error_t type_err = CVMVHD_ERROR_INITIALIZER;
+    if (cvmvhd_get_type(vhd_file, &type_err) == CVMVHD_TYPE_DYNAMIC)
+    {
+        printf("\n=== Dynamic VHD Header ===\n");
+        vhd_dynamic_header_t header;
+        if (cvmvhd_read_dynamic_header(vhd_file, &header, &type_err) == 0)
+        {
+            /* Extract big-endian values properly */
+            uint64_t data_offset = 0;
+            uint64_t table_offset = 0;
+            uint32_t header_version = 0;
+            
+            /* Read big-endian 8-byte values */
+            for (int i = 0; i < 8; i++) {
+                data_offset = (data_offset << 8) | header.data_offset[i];
+                table_offset = (table_offset << 8) | header.table_offset[i];
+            }
+            
+            /* Read big-endian 4-byte header version */
+            for (int i = 0; i < 4; i++) {
+                header_version = (header_version << 8) | header.header_version[i];
+            }
+            
+            printf("cookie=\"%.8s\"\n", (char*)header.cookie);
+            printf("data_offset=%lu\n", data_offset);
+            printf("table_offset=%lu\n", table_offset);
+            printf("header_version=0x%08x\n", header_version);
+            printf("max_table_entries=%u\n", _swapu32(header.max_table_entries));
+            printf("block_size=%u\n", _swapu32(header.block_size));
+            printf("checksum=0x%08x\n", _swapu32(header.checksum));
+            _hexdump("parent_unique_id", header.parent_uuid, sizeof(header.parent_uuid));
+            printf("parent_timestamp=%u\n", _swapu32(header.parent_timestamp));
+        }
+        else
+        {
+            printf("Warning: Could not read dynamic VHD header: %s\n", type_err.buf);
+        }
+    }
 
     ret = 0;
 
@@ -616,6 +657,292 @@ done:
 
     if (stream)
         fclose(stream);
+
+    return ret;
+}
+
+cvmvhd_type_t cvmvhd_get_type(const char* vhd_file, cvmvhd_error_t* err)
+{
+    cvmvhd_type_t ret = CVMVHD_TYPE_UNKNOWN;
+    FILE* stream = NULL;
+    vhd_footer_t footer;
+    uint8_t first_block[512];
+    struct stat statbuf;
+
+    _clear_err(err);
+
+    if (!vhd_file)
+    {
+        _err(err, "null parameter");
+        goto done;
+    }
+
+    /* Get file size */
+    if (stat(vhd_file, &statbuf) != 0)
+    {
+        _err(err, "failed to stat: %s", vhd_file);
+        goto done;
+    }
+
+    /* File must be at least 1KB (512 bytes footer + some data) */
+    if (statbuf.st_size < 1024)
+    {
+        _err(err, "file too small to be a VHD: %s", vhd_file);
+        goto done;
+    }
+
+    if (!(stream = fopen(vhd_file, "rb")))
+    {
+        _err(err, "failed to open: %s", vhd_file);
+        goto done;
+    }
+
+    /* Check if there's a valid footer at the end */
+    if (_load_vhd_footer(stream, &footer) < 0)
+    {
+        _err(err, "no valid VHD footer found: %s", vhd_file);
+        goto done;
+    }
+
+    /* Read first 512 bytes to check for dynamic VHD signature */
+    if (fseek(stream, 0, SEEK_SET) != 0)
+    {
+        _err(err, "failed to seek to beginning: %s", vhd_file);
+        goto done;
+    }
+
+    if (fread(first_block, 1, sizeof(first_block), stream) != sizeof(first_block))
+    {
+        _err(err, "failed to read first block: %s", vhd_file);
+        goto done;
+    }
+
+    /* Check if first block contains VHD footer signature */
+    if (memcmp(first_block, "conectix", 8) == 0)
+    {
+        /* Footer at beginning indicates dynamic VHD */
+        ret = CVMVHD_TYPE_DYNAMIC;
+    }
+    else
+    {
+        /* No footer at beginning, but valid footer at end indicates fixed VHD */
+        ret = CVMVHD_TYPE_FIXED;
+    }
+
+done:
+
+    if (stream)
+        fclose(stream);
+
+    return ret;
+}
+
+int cvmvhd_read_dynamic_header(const char* vhd_file, vhd_dynamic_header_t* header, cvmvhd_error_t* err)
+{
+    int ret = -EINVAL;
+    FILE* stream = NULL;
+    cvmvhd_error_t type_err = CVMVHD_ERROR_INITIALIZER;
+    
+    _clear_err(err);
+
+    if (!vhd_file || !header)
+    {
+        _err(err, "null parameter");
+        goto done;
+    }
+
+    /* Verify this is actually a dynamic VHD */
+    if (cvmvhd_get_type(vhd_file, &type_err) != CVMVHD_TYPE_DYNAMIC)
+    {
+        _err(err, "not a dynamic VHD file: %s", vhd_file);
+        goto done;
+    }
+
+    if (!(stream = fopen(vhd_file, "rb")))
+    {
+        _err(err, "failed to open: %s", vhd_file);
+        goto done;
+    }
+
+    /* Dynamic VHD structure: 
+     * [Footer copy (512 bytes)] + [Dynamic header (1024 bytes)] + [BAT] + [Data blocks]
+     * We need to seek to position 512 to read the dynamic header
+     */
+    if (fseek(stream, 512, SEEK_SET) != 0)
+    {
+        _err(err, "failed to seek to dynamic header: %s", vhd_file);
+        goto done;
+    }
+
+    /* Read the dynamic header */
+    if (fread(header, 1, sizeof(vhd_dynamic_header_t), stream) != sizeof(vhd_dynamic_header_t))
+    {
+        _err(err, "failed to read dynamic header: %s", vhd_file);
+        goto done;
+    }
+
+    /* Verify the dynamic header signature */
+    if (memcmp(header->cookie, "cxsparse", 8) != 0)
+    {
+        _err(err, "invalid dynamic header signature: %s", vhd_file);
+        goto done;
+    }
+
+    ret = 0;
+
+done:
+
+    if (stream)
+        fclose(stream);
+
+    return ret;
+}
+
+int cvmvhd_extract_raw_image(const char* vhd_file, const char* raw_file, cvmvhd_error_t* err)
+{
+    int ret = -EINVAL;
+    FILE* vhd_stream = NULL;
+    FILE* raw_stream = NULL;
+    vhd_dynamic_header_t header;
+    vhd_footer_t footer;
+    uint32_t* bat = NULL;
+    uint8_t* block_buffer = NULL;
+    uint64_t table_offset;
+    uint32_t max_table_entries;
+    uint32_t block_size;
+    uint64_t disk_size;
+
+    _clear_err(err);
+
+    if (!vhd_file || !raw_file)
+    {
+        _err(err, "null parameter");
+        goto done;
+    }
+
+    /* Verify this is a dynamic VHD and read header */
+    if (cvmvhd_read_dynamic_header(vhd_file, &header, err) < 0)
+        goto done;
+
+    /* Extract header values with proper endianness */
+    table_offset = 0;
+    for (int i = 0; i < 8; i++) {
+        table_offset = (table_offset << 8) | header.table_offset[i];
+    }
+    
+    max_table_entries = _swapu32(header.max_table_entries);
+    block_size = _swapu32(header.block_size);
+
+    /* Get disk size from footer */
+    if (!(vhd_stream = fopen(vhd_file, "rb")))
+    {
+        _err(err, "failed to open VHD file: %s", vhd_file);
+        goto done;
+    }
+
+    if (_load_vhd_footer(vhd_stream, &footer) < 0)
+    {
+        _err(err, "failed to load VHD footer: %s", vhd_file);
+        goto done;
+    }
+
+    disk_size = _swapu64(footer.current_size);
+
+    /* Allocate BAT array */
+    bat = malloc(max_table_entries * sizeof(uint32_t));
+    if (!bat)
+    {
+        _err(err, "failed to allocate BAT array");
+        goto done;
+    }
+
+    /* Read BAT from VHD */
+    if (fseek(vhd_stream, table_offset, SEEK_SET) != 0)
+    {
+        _err(err, "failed to seek to BAT offset");
+        goto done;
+    }
+
+    if (fread(bat, sizeof(uint32_t), max_table_entries, vhd_stream) != max_table_entries)
+    {
+        _err(err, "failed to read BAT");
+        goto done;
+    }
+
+    /* Create raw output file */
+    if (!(raw_stream = fopen(raw_file, "wb")))
+    {
+        _err(err, "failed to create raw file: %s", raw_file);
+        goto done;
+    }
+
+    /* Allocate block buffer */
+    block_buffer = malloc(block_size);
+    if (!block_buffer)
+    {
+        _err(err, "failed to allocate block buffer");
+        goto done;
+    }
+
+    /* Extract blocks */
+    for (uint32_t i = 0; i < max_table_entries; i++)
+    {
+        uint32_t block_offset = _swapu32(bat[i]);
+        
+        if (block_offset == 0xFFFFFFFF)
+        {
+            /* Unallocated block - write zeros */
+            memset(block_buffer, 0, block_size);
+        }
+        else
+        {
+            /* Allocated block - read from VHD */
+            uint64_t file_offset = (uint64_t)block_offset * 512;
+            
+            /* Skip block bitmap - bitmap size is (block_size / 512) bits, rounded up to sector boundary */
+            uint32_t sectors_per_block = block_size / 512;
+            uint32_t bitmap_size_bits = sectors_per_block;
+            uint32_t bitmap_size_bytes = (bitmap_size_bits + 7) / 8;  /* Round up to bytes */
+            uint32_t bitmap_size_sectors = (bitmap_size_bytes + 511) / 512;  /* Round up to sectors */
+            uint64_t data_offset = file_offset + (bitmap_size_sectors * 512);
+            
+            if (fseek(vhd_stream, data_offset, SEEK_SET) != 0)
+            {
+                _err(err, "failed to seek to block %u data at offset %lu", i, data_offset);
+                goto done;
+            }
+            
+            if (fread(block_buffer, 1, block_size, vhd_stream) != block_size)
+            {
+                _err(err, "failed to read block %u", i);
+                goto done;
+            }
+        }
+
+        /* Write block to raw file */
+        if (fwrite(block_buffer, 1, block_size, raw_stream) != block_size)
+        {
+            _err(err, "failed to write block %u to raw file", i);
+            goto done;
+        }
+
+        /* Check if we've written enough data */
+        if ((uint64_t)(i + 1) * block_size >= disk_size)
+            break;
+    }
+
+    printf("Extracted %lu bytes from dynamic VHD to raw image\n", disk_size);
+    ret = 0;
+
+done:
+    if (vhd_stream)
+        fclose(vhd_stream);
+    if (raw_stream)
+        fclose(raw_stream);
+    if (bat)
+        free(bat);
+    if (block_buffer)
+        free(block_buffer);
 
     return ret;
 }

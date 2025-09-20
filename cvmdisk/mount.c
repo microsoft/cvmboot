@@ -25,7 +25,7 @@ void mount_disk_ex(const char* disk, int flags, bool bind)
     ctx->mount_flags = flags;
 
     /* find the Linux root partition */
-    if (find_gpt_entry_by_type(disk, &linux_type_guid, ctx->source, NULL) < 0)
+    if (find_gpt_entry_by_linux_root_type(disk, ctx->source, NULL) < 0)
         ERR("Cannot find Linux root partition: disk=%s", disk);
 
     /* find the EFI root partition */

@@ -144,6 +144,8 @@ size_t gpt_find_partition(gpt_t* gpt, const guid_t* unique_guid);
 
 ssize_t gpt_find_type_partition(const gpt_t* gpt, const guid_t* type_guid);
 
+ssize_t gpt_find_linux_root_partition(const gpt_t* gpt);
+
 int gpt_get_entry(const gpt_t* gpt, size_t index, gpt_entry_t* entry);
 
 INLINE void gpt_get_entries(
@@ -200,6 +202,11 @@ ssize_t gpt_trailing_free_space(const gpt_t* gpt);
 int find_gpt_entry_by_type(
     const char* disk,
     const guid_t* type,
+    char part[PATH_MAX],
+    gpt_entry_t* entry);
+
+int find_gpt_entry_by_linux_root_type(
+    const char* disk,
     char part[PATH_MAX],
     gpt_entry_t* entry);
 

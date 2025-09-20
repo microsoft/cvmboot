@@ -748,6 +748,22 @@ ssize_t gpt_find_type_partition(const gpt_t* gpt, const guid_t* type_guid)
     return -ENOENT;
 }
 
+ssize_t gpt_find_linux_root_partition(const gpt_t* gpt)
+{
+    for (size_t i = 0; i < gpt->_num_entries; i++)
+    {
+        const gpt_entry_t* e = &gpt->_primary.entries[i];
+        guid_t tmp_guid;
+        guid_init_xy(&tmp_guid, e->type_guid1, e->type_guid2);
+
+        if (is_linux_root_type_guid(&tmp_guid))
+            return i;
+    }
+
+    // Not found!
+    return -ENOENT;
+}
+
 int gpt_remove_partitions(gpt_t* gpt, const guid_t* type_guid, bool trace)
 {
     int ret = 0;
@@ -1138,6 +1154,47 @@ int find_gpt_entry_by_type(
     if (entry)
         gpt_get_entry(gpt, index, entry);
 
+
+    if (part)
+    {
+        uint32_t loopnum;
+
+        if (loop_parse(disk, &loopnum, NULL) < 0)
+            ERAISE(-EINVAL);
+
+        loop_format(part, loopnum, index + 1);
+    }
+
+    ret = index;
+
+done:
+
+    if (gpt)
+        gpt_close(gpt);
+
+    return ret;
+}
+
+/* Find GPT entry by Linux root filesystem type (supports both generic Linux and x86-64 root types) */
+int find_gpt_entry_by_linux_root_type(
+    const char* disk,
+    char part[PATH_MAX],
+    gpt_entry_t* entry)
+{
+    int ret = 0;
+    int32_t index;
+    gpt_t* gpt = NULL;
+
+    // Attempt to open the GPT.
+    if (gpt_open(disk, O_RDONLY, &gpt) < 0)
+        ERAISE(-EINVAL);
+
+    // First try to find using the enhanced search function
+    if ((index = gpt_find_linux_root_partition(gpt)) < 0)
+        ERAISE(-ENOENT);
+
+    if (entry)
+        gpt_get_entry(gpt, index, entry);
 
     if (part)
     {

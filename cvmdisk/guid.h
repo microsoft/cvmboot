@@ -52,9 +52,12 @@ bool guid_equal(const guid_t* x, const guid_t* y);
 
 void guid_dump(const guid_t* guid);
 
+bool is_linux_root_type_guid(const guid_t* guid);
+
 extern const guid_t mbr_type_guid;
 extern const guid_t efi_type_guid;
 extern const guid_t linux_type_guid;
+extern const guid_t linux_x86_64_root_type_guid;
 extern const guid_t rootfs_upper_type_guid;
 extern const guid_t efi_upper_type_guid;
 extern const guid_t thin_data_type_guid;

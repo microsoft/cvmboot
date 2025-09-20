@@ -332,13 +332,12 @@ static int _create_rootfs_sparse_bit_string(
     frag_list_t holes = FRAG_LIST_INITIALIZER;
     size_t offset;
     size_t end;
-    const guid_t guid = linux_type_guid;
     size_t rootfs_block_offset = 0;
     uint8_t* non_sparse_bits = NULL;
     size_t non_sparse_bits_size = 0;
 
     /* Find GPT entry of the rootfs partition (first Linux partition) */
-    if ((find_gpt_entry_by_type(disk, &guid, NULL, &entry)) < 0)
+    if ((find_gpt_entry_by_linux_root_type(disk, NULL, &entry)) < 0)
         ERAISE(-EINVAL);
 
     /* Calculate offset/end of rootfs partition */

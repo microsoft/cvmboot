@@ -784,7 +784,7 @@ static void _install_initrd_onto_esp(
         char root_dev[PATH_MAX];
         size_t num_thin_sectors;
 
-        if (find_gpt_entry_by_type(disk, &linux_type_guid, root_dev, NULL) < 0)
+        if (find_gpt_entry_by_linux_root_type(disk, root_dev, NULL) < 0)
             ERR("Cannot find Linux partition: disk=%s", disk);
 
         num_thin_sectors = _get_num_sectors(root_dev);
@@ -1171,7 +1171,7 @@ static void _append_cmdline_option(
         colors_green, colors_reset);
 
     /* Get path of Linux EXT4 partition */
-    if (find_gpt_entry_by_type(disk, &linux_type_guid, loop, NULL) < 0)
+    if (find_gpt_entry_by_linux_root_type(disk, loop, NULL) < 0)
         ERR("Cannot find Linux root partition: disk=%s", disk);
 
     mount_disk(disk, 0);
@@ -1383,7 +1383,6 @@ static void _expand_ext4_root_partition(const char* disk)
 {
     int part_index;
     char source[2*PATH_MAX];
-    const guid_t guid = linux_type_guid;
     ssize_t num_sectors;
     size_t block_size;
     size_t block_count;
@@ -1396,7 +1395,7 @@ static void _expand_ext4_root_partition(const char* disk)
         colors_green, colors_reset);
 
     /* find the Linux root partition */
-    if ((part_index = find_gpt_entry_by_type(disk, &guid, source, NULL)) < 0)
+    if ((part_index = find_gpt_entry_by_linux_root_type(disk, source, NULL)) < 0)
         ERR("Cannot find Linux root partition: disk=%s", disk);
 
     /* Run fsck on the EXT4 partition */
@@ -1464,14 +1463,13 @@ static void _round_root_partition(const char* disk)
 {
     int part_index;
     char source[2*PATH_MAX];
-    const guid_t guid = linux_type_guid;
     buf_t buf = BUF_INITIALIZER;
 
     printf("%s>>> Rounding size of rootfs partition up to 4096 boundary...%s\n",
         colors_green, colors_reset);
 
     /* find the Linux root partition */
-    if ((part_index = find_gpt_entry_by_type(disk, &guid, source, NULL)) < 0)
+    if ((part_index = find_gpt_entry_by_linux_root_type(disk, source, NULL)) < 0)
         ERR("Cannot find rootfs partition: disk=%s", disk);
 
     /* Enlarge VHD slightly to make room for partition rounding below */
@@ -1625,8 +1623,8 @@ static void _initialize_thin_partitions(const char* disk)
     execf_return(&buf, "dmsetup remove %s 2> /dev/null", thin_pool_name());
 
     /* find the Linux root partition */
-    if ((root_index = find_gpt_entry_by_type(
-        disk, &linux_type_guid, root_dev, &entry)) < 0)
+    if ((root_index = find_gpt_entry_by_linux_root_type(
+        disk, root_dev, &entry)) < 0)
     {
         ERR("Cannot find Linux partition: disk=%s", disk);
     }
@@ -1764,8 +1762,8 @@ static void _verify_thin_partitions(const char* disk)
     execf_return(&buf, "dmsetup remove %s 2> /dev/null", thin_pool_name());
 
     /* find the Linux root partition */
-    if ((root_index = find_gpt_entry_by_type(
-        disk, &linux_type_guid, root_dev, &entry)) < 0)
+    if ((root_index = find_gpt_entry_by_linux_root_type(
+        disk, root_dev, &entry)) < 0)
     {
         ERR("Cannot find Linux partition: disk=%s", disk);
     }
@@ -1912,8 +1910,8 @@ static void _add_extra_partitions(
     printf("%s>>> Adding extra partitions...%s\n", colors_green, colors_reset);
 
     /* find the Linux root partition */
-    if ((part_index = find_gpt_entry_by_type(
-        disk, &linux_type_guid, source, &entry)) < 0)
+    if ((part_index = find_gpt_entry_by_linux_root_type(
+        disk, source, &entry)) < 0)
     {
         ERR("Cannot find Linux root partition: disk=%s", disk);
     }
@@ -2374,6 +2372,25 @@ static int _has_partition(const char* disk, const guid_t* type_guid)
     ret = (r < 0) ? -1 : 0;
 
     gpt_close(gpt);
+    return ret;
+}
+
+static int _has_linux_root_partition(const char* disk)
+{
+    int ret = 0;
+    int r = 0;
+    gpt_t* gpt;
+
+    if ((r = gpt_open(disk, O_RDONLY, &gpt)) < 0)
+    {
+        ERR("failed to open the GUID partition table: %s: %s",
+            disk, strerror(-ret));
+    }
+
+    r = gpt_find_linux_root_partition(gpt);
+    ret = (r < 0) ? -1 : 0;
+
+    gpt_close(gpt);
 
     return ret;
 }
@@ -2433,7 +2450,7 @@ static image_state_t _get_image_state(const char* disk)
         goto done;
     }
 
-    if (_has_partition(disk, &linux_type_guid) == 0)
+    if (_has_linux_root_partition(disk) == 0)
         has_linux_partition = true;
 
     if (_has_partition(disk, &verity_type_guid) == 0)
@@ -2641,8 +2658,8 @@ static int _strip_disk(const char* disk, const char* vhd_file)
         gpt_t* gpt = NULL;
 
         /* get the index of the first linux partition (rootfs) */
-        if ((rootfs_index = find_gpt_entry_by_type(
-            disk, &linux_type_guid, NULL, NULL)) < 0)
+        if ((rootfs_index = find_gpt_entry_by_linux_root_type(
+            disk, NULL, NULL)) < 0)
         {
             ERR("Cannot find Linux root partition: disk=%s", disk);
         }
@@ -3099,7 +3116,7 @@ static void _add_verity_partition(const char* disk, bool verify)
         ERR("cannot access %s", disk);
 
     /* Find the Linux rootfs partition */
-    if (find_gpt_entry_by_type(disk, &linux_type_guid, linux_path, NULL) < 0)
+    if (find_gpt_entry_by_linux_root_type(disk, linux_path, NULL) < 0)
         ERR("Cannot find Linux rootfs partition: %s", disk);
 
     // Add the verity partition for the rootfs */
@@ -3621,7 +3638,7 @@ static int _subcommand_shell(
     execf(&buf, "sgdisk -e %s", disk);
     execf(&buf, "sgdisk -s %s", disk);
 
-    if (find_gpt_entry_by_type(disk, &linux_type_guid, part, NULL) < 0 ||
+    if (find_gpt_entry_by_linux_root_type(disk, part, NULL) < 0 ||
         __test_ext4_rootfs(part) < 0)
     {
         printf(

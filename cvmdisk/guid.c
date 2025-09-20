@@ -36,6 +36,15 @@ const guid_t linux_type_guid =
     { 0x8e, 0x79, 0x3d, 0x69, 0xd8, 0x47, 0x7d, 0xe4 },
 };
 
+/* "4f68bce3-e8cd-4db1-96e7-fbcaf984b709" -- Linux x86-64 root partition type */
+const guid_t linux_x86_64_root_type_guid =
+{
+    0x4f68bce3,
+    0xe8cd,
+    0x4db1,
+    { 0x96, 0xe7, 0xfb, 0xca, 0xf9, 0x84, 0xb7, 0x09 },
+};
+
 /* "c148c601-508c-4f28-aa23-3c1a6955f649" -- Upper-layer partition type */
 const guid_t rootfs_upper_type_guid =
 {
@@ -340,4 +349,10 @@ void guid_dump(const guid_t* guid)
         guid_format(&str, guid);
         printf("%s", str.buf);
     }
+}
+
+bool is_linux_root_type_guid(const guid_t* guid)
+{
+    return guid_equal(guid, &linux_type_guid) || 
+           guid_equal(guid, &linux_x86_64_root_type_guid);
 }

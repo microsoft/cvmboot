@@ -891,8 +891,11 @@ static void _remove_kvp_service(const char* disk)
     execf(&buf, "rm -f %s", path.buf);
 
     printf("Disabling KVP service...\n");
-    execf(&buf, "chroot %s /usr/bin/systemctl disable hv-kvp-daemon.service",
-        mntdir());
+    /* Try to disable the service, but don't fail if it doesn't exist (like on Mariner)*/
+    if (execf_return(&buf, "chroot %s /usr/bin/systemctl disable hv-kvp-daemon.service 2>/dev/null", mntdir()) != 0)
+    {
+        printf("KVP service not found or already disabled, continuing...\n");
+    }
 
     umount_disk();
 

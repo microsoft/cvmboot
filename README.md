@@ -262,3 +262,4 @@ The ``cvmsign`` program is used to sign ``cvmsign.cpio``. For Azure Cloud one
 may use ``akvsign`` instead, which uses Azure Key Vault (AKV) to perform the
 signing without disclosing the private key to the local machine. Using
 ``akvsign`` requires setting up login credentials with the AKV service.
+

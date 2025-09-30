@@ -13,6 +13,7 @@ sudo ${OPT} apt install -y tpm2-tools
 sudo ${OPT} apt install -y pkg-config
 sudo ${OPT} apt install -y libssl-dev
 sudo ${OPT} apt install -y bzip2
+sudo ${OPT} apt install -y qemu-utils
 if [ ! -d "${HOME}/.cargo/bin" ];
 then
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y

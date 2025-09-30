@@ -3246,6 +3246,26 @@ static void _prepare_disk(
         _strip_disk_in_place(disk);
 }
 
+static bool _is_vhdx_path(const char* path)
+{
+    const char* p = strstr(path, ".vhdx");
+    return p && strcmp(p, ".vhdx") == 0;
+}
+
+static int _vhdx_path_to_vhd_path(const char* vhdx, char vhd[PATH_MAX])
+{
+    char* p;
+
+    strlcpy(vhd, vhdx, PATH_MAX);
+
+    if (!(p = strstr(vhd, ".vhdx")) || strcmp(p, ".vhdx") != 0)
+        return -1;
+
+    p[0] = '\0';
+    strcat(p, ".vhd");
+    return 0;
+}
+
 /*
 **==============================================================================
 **
@@ -3511,9 +3531,13 @@ static int _subcommand_init(
 {
     const char* input_disk = NULL;
     const char* output_disk = NULL;
+    const char* original_output_disk = NULL;
     const char* disk = NULL;
     const char* signtool = NULL;
     char signtool_path[PATH_MAX];
+    buf_t buf = BUF_INITIALIZER;
+    char input_disk_vhd_buf[PATH_MAX];
+    char output_disk_vhd_buf[PATH_MAX];
 
     /* check the arguments */
     if (argc != 5)
@@ -3524,14 +3548,52 @@ static int _subcommand_init(
 
     input_disk = argv[2];
     output_disk = argv[3];
+    original_output_disk = argv[3];
     signtool = argv[4];
-    _check_vhd(input_disk);
 
     if (_same_file(input_disk, output_disk))
     {
         ERR("input-disk and output-disk refer to the same file: %s %s\n",
             input_disk, output_disk);
     }
+
+    // Convert VHDX to VHD (if needed)
+    if (_is_vhdx_path(input_disk))
+    {
+        const char opts[] = "-o subformat=fixed,force_size";
+        char cmd[2 * PATH_MAX];
+
+        if (_vhdx_path_to_vhd_path(input_disk, input_disk_vhd_buf) < 0)
+            ERR("cannot convert vhdx path to vhd path");
+
+        printf("%s>>> Converting %s to %s...%s\n",
+            colors_green, input_disk, input_disk_vhd_buf, colors_reset);
+
+        snprintf(cmd, sizeof(cmd),
+            "qemu-img convert %s -f vhdx -O vpc %s %s -p",
+            opts, input_disk, input_disk_vhd_buf);
+
+        printf("%s\n", cmd);
+
+        if (system(cmd) != 0)
+        {
+            fprintf(stderr, "Command failed: '%s'", cmd);
+            exit(1);
+        }
+
+        input_disk = input_disk_vhd_buf;
+    }
+
+    // Convert VHDX path to VHD path (if needed)
+    if (_is_vhdx_path(output_disk))
+    {
+        if (_vhdx_path_to_vhd_path(output_disk, output_disk_vhd_buf) < 0)
+            ERR("cannot convert vhdx path to vhd path");
+
+        output_disk = output_disk_vhd_buf;
+    }
+
+    _check_vhd(input_disk);
 
     switch (_get_image_state(input_disk))
     {
@@ -3547,6 +3609,10 @@ static int _subcommand_init(
 
     if (sparse_copy(input_disk, output_disk) < 0)
         ERR("copy failed: %s => %s\n", input_disk, output_disk);
+
+    // Remove temporary input disk
+    if (input_disk == input_disk_vhd_buf)
+        unlink(input_disk);
 
     globals.disk = output_disk;
     losetup(globals.disk, globals.loop);
@@ -3576,6 +3642,30 @@ static int _subcommand_init(
     disk = globals.loop;
     _protect_disk(disk, signtool_path, verify);
 
+    // Convert VHD to VHDX (if needed)
+    if (output_disk == output_disk_vhd_buf)
+    {
+        char cmd[PATH_MAX * 4];
+
+        printf("%s>>> Converting %s to %s...%s\n",
+            colors_green, output_disk, original_output_disk, colors_reset);
+
+        snprintf(cmd, sizeof(cmd),
+            "qemu-img convert -f vpc -O vhdx %s %s -p",
+            output_disk, original_output_disk);
+
+        printf("%s\n", cmd);
+
+        if (system(cmd) != 0)
+        {
+            fprintf(stderr, "Command failed: '%s'", cmd);
+            exit(1);
+        }
+
+        unlink(output_disk);
+    }
+
+    buf_release(&buf);
     return 0;
 }
 
@@ -4111,6 +4201,7 @@ int main(int argc, const char* argv[])
     _check_program("sed");
     _check_program("sgdisk");
     _check_program("sparsefs-mount");
+    _check_program("qemu-img");
 
     /* Prepend "/boot/efi" to all EFI paths */
     paths_set_prefix("/boot/efi");

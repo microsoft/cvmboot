@@ -4030,6 +4030,82 @@ static int _subcommand_copy(int argc, const char* argv[])
     return ret;
 }
 
+static int _subcommand_vhdx2vhd(int argc, const char* argv[])
+{
+    int ret = 0;
+
+    // Check arguments
+    if (argc != 4)
+    {
+        printf("Usage: %s %s <vhdx-input-disk> <vhd-output-disk>\n",
+            argv[0], argv[1]);
+        exit(1);
+    }
+
+    const char* input_disk = argv[2];
+    const char* output_disk = argv[3];
+
+    // Perform the conversion
+    {
+        char cmd[3 * PATH_MAX];
+
+        printf("Converting %s to %s...\n", input_disk, output_disk);
+
+        snprintf(cmd, sizeof(cmd),
+            "qemu-img convert %s -f vhdx -O vpc %s %s -p",
+            "-o subformat=fixed,force_size",
+            input_disk,
+            output_disk);
+
+        printf("%s\n", cmd);
+
+        if (system(cmd) != 0)
+        {
+            fprintf(stderr, "Command failed: '%s'", cmd);
+            exit(1);
+        }
+    }
+
+    return ret;
+}
+
+static int _subcommand_vhd2vhdx(int argc, const char* argv[])
+{
+    int ret = 0;
+
+    // Check arguments
+    if (argc != 4)
+    {
+        printf("Usage: %s %s <vhd-input-disk> <vhdx-output-disk>\n",
+            argv[0], argv[1]);
+        exit(1);
+    }
+
+    const char* input_disk = argv[2];
+    const char* output_disk = argv[3];
+
+    // Perform the conversion
+    {
+        char cmd[3 * PATH_MAX];
+
+        printf("Converting %s to %s...\n", input_disk, output_disk);
+
+        snprintf(cmd, sizeof(cmd),
+            "qemu-img convert -f vpc -O vhdx %s %s -p",
+            input_disk, output_disk);
+
+        printf("%s\n", cmd);
+
+        if (system(cmd) != 0)
+        {
+            fprintf(stderr, "Command failed: '%s'", cmd);
+            exit(1);
+        }
+    }
+
+    return ret;
+}
+
 static int _subcommand_azcopy(int argc, const char* argv[])
 {
     int ret = 0;
@@ -4491,6 +4567,14 @@ int main(int argc, const char* argv[])
     else if (strcmp(subcommand, "copy") == 0)
     {
         _subcommand_copy(argc, argv);
+    }
+    else if (strcmp(subcommand, "vhdx2vhd") == 0)
+    {
+        _subcommand_vhdx2vhd(argc, argv);
+    }
+    else if (strcmp(subcommand, "vhd2vhdx") == 0)
+    {
+        _subcommand_vhd2vhdx(argc, argv);
     }
     else
     {

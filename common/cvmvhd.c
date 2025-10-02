@@ -688,26 +688,21 @@ done:
 
 /* Determine VHD file type (fixed vs. dynamic) based on file structure analysis
  * 
- * This function analyzes a VHD file to determine if it's a fixed or dynamic VHD
- * by examining the presence and location of VHD footers according to the VHD
- * specification.
+ * Analyzes a VHD file to determine if it's a fixed or dynamic VHD by examining
+ * the presence and location of VHD footers according to the VHD specification.
  * 
  * VHD Type Detection Algorithm (per Microsoft VHD Specification v1.0):
  * - All VHD files have a 512-byte footer at the end with "conectix" signature
  * - Fixed VHDs: Only have footer at the end, data starts immediately
  * - Dynamic VHDs: Have footer copy at beginning AND footer at end
  * 
- * Technical Implementation:
- * 1. Verify file size is at least 1KB (minimum for valid VHD)
- * 2. Load and validate footer from end of file (required for all VHDs)
- * 3. Read first 512 bytes and check for "conectix" signature
- * 4. If "conectix" found at start → Dynamic VHD (footer copy present)
- * 5. If no "conectix" at start but valid footer at end → Fixed VHD
- * 
  * VHD Specification References:
  * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * - GitHub libvhdi VHD format documentation and analysis
+ *   Section: Hard Disk Footer Format
+ * 
+ * Additional references:
+ * - GitHub libvhd VHD format documentation and analysis
  *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
  * - Microsoft VHD Developer Blog (technical deep-dive)
  *   https://blogs.msdn.microsoft.com/virtual_pc_guy/2007/10/11/understanding-dynamic-vhd/
@@ -732,15 +727,14 @@ cvmvhd_type_t cvmvhd_get_type(const char* vhd_file, cvmvhd_error_t* err)
         goto done;
     }
 
-    /* Get file size */
+    /* Step 1: Verify file size is at least VHD_FOOTER_SIZE (minimum for valid VHD) */
     if (stat(vhd_file, &statbuf) != 0)
     {
         _err(err, "Failed to analyze VHD type: cannot stat file %s", vhd_file);
         goto done;
     }
 
-    /* File must be at least 1KB (512 bytes footer + some data) */
-    if (statbuf.st_size < 1024)
+    if (statbuf.st_size < VHD_FOOTER_SIZE)
     {
         _err(err, "Failed to analyze VHD type: file too small to be a VHD: %s", vhd_file);
         goto done;
@@ -752,14 +746,14 @@ cvmvhd_type_t cvmvhd_get_type(const char* vhd_file, cvmvhd_error_t* err)
         goto done;
     }
 
-    /* Check if there's a valid footer at the end */
+    /* Step 2: Load and validate footer from end of file (required for all VHDs) */
     if (_load_vhd_footer(stream, &footer) < 0)
     {
         _err(err, "Failed to analyze VHD type: no valid VHD footer found in %s", vhd_file);
         goto done;
     }
 
-    /* Read first 512 bytes to check for dynamic VHD signature */
+    /* Step 3: Read first 512 bytes and check for "conectix" signature */
     if (fseek(stream, 0, SEEK_SET) != 0)
     {
         _err(err, "Failed to analyze VHD type: cannot seek to beginning of %s", vhd_file);
@@ -772,15 +766,15 @@ cvmvhd_type_t cvmvhd_get_type(const char* vhd_file, cvmvhd_error_t* err)
         goto done;
     }
 
-    /* Check if first block contains VHD footer signature */
+    /* Step 4: Determine VHD type based on footer signature location */
     if (memcmp(first_block, "conectix", 8) == 0)
     {
-        /* Footer at beginning indicates dynamic VHD */
+        /* "conectix" found at start → Dynamic VHD (footer copy present) */
         ret = CVMVHD_TYPE_DYNAMIC;
     }
     else
     {
-        /* No footer at beginning, but valid footer at end indicates fixed VHD */
+        /* No "conectix" at start but valid footer at end → Fixed VHD */
         ret = CVMVHD_TYPE_FIXED;
     }
 
@@ -805,7 +799,7 @@ done:
  * 
  * Dynamic Header Contents (all multi-byte values in big-endian):
  * - Bytes 0-7: "cxsparse" cookie signature (required for validation)
- * - Bytes 8-15: Data offset (unused, set to 0xFFFFFFFFFFFFFFFF)
+ * - Bytes 8-15: Data offset (unused, set to 0xFFFFFFFF)
  * - Bytes 16-23: Table offset (BAT location in file)
  * - Bytes 24-27: Header version (0x00010000)
  * - Bytes 28-31: Max table entries (number of BAT entries)
@@ -819,12 +813,13 @@ done:
  * VHD Specification References:
  * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
+ *   Section: Dynamic Disk Header Format
+ * 
+ * Additional references:
  * - GitHub libvhdi VHD format documentation and analysis
  *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
  * - Microsoft Developer Network VHD Format (archived documentation)
  *   https://docs.microsoft.com/en-us/previous-versions/windows/desktop/legacy/dd323654(v=vs.85)
- * - SANS VHD forensics analysis and structure documentation
- *   https://www.sans.org/reading-room/whitepapers/forensics/virtual-hard-disk-vhd-analysis-33495
  * 
  * @param vhd_file: Path to dynamic VHD file to read from
  * @param header: Pointer to structure that will receive the parsed header data
@@ -845,7 +840,7 @@ int cvmvhd_read_dynamic_header(const char* vhd_file, vhd_dynamic_header_t* heade
         goto done;
     }
 
-    /* Verify this is actually a dynamic VHD */
+    /* Step 1: Verify this is a dynamic VHD */
     if (cvmvhd_get_type(vhd_file, &type_err) != CVMVHD_TYPE_DYNAMIC)
     {
         _err(err, "Failed to read dynamic header: not a dynamic VHD file: %s", vhd_file);
@@ -858,7 +853,8 @@ int cvmvhd_read_dynamic_header(const char* vhd_file, vhd_dynamic_header_t* heade
         goto done;
     }
 
-    /* Dynamic VHD structure: 
+    /* Step 2: Seek to dynamic header at offset 512 bytes
+     * Dynamic VHD structure: 
      * [Footer copy (512 bytes)] + [Dynamic header (1024 bytes)] + [BAT] + [Data blocks]
      * We need to seek to position 512 to read the dynamic header
      */
@@ -868,17 +864,32 @@ int cvmvhd_read_dynamic_header(const char* vhd_file, vhd_dynamic_header_t* heade
         goto done;
     }
 
-    /* Read the dynamic header */
+    /* Step 3: Read the dynamic header to get BAT location, block size, and metadata */
     if (fread(header, 1, sizeof(vhd_dynamic_header_t), stream) != sizeof(vhd_dynamic_header_t))
     {
         _err(err, "Failed to read dynamic header: incomplete read from %s", vhd_file);
         goto done;
     }
 
-    /* Verify the dynamic header signature */
+    /* Step 4: Verify the "cxsparse" signature*/
     if (memcmp(header->cookie, "cxsparse", 8) != 0)
     {
         _err(err, "Failed to read dynamic header: invalid signature in %s", vhd_file);
+        goto done;
+    }
+
+    /* Step 5: Validate header parameters*/
+    uint32_t block_size = _swapu32(header->block_size);
+    uint32_t max_table_entries = _swapu32(header->max_table_entries);
+    
+    if (block_size == 0 || block_size > VHD_MAX_BLOCK_SIZE || (block_size % VHD_SECTOR_SIZE) != 0)
+    {
+        _err(err, "Invalid dynamic VHD: bad block size %u", block_size);
+        goto done;
+    }
+    if (max_table_entries > VHD_MAX_BAT_ENTRIES)
+    {
+        _err(err, "Invalid dynamic VHD: BAT too large %u entries", max_table_entries);
         goto done;
     }
 
@@ -892,41 +903,29 @@ done:
     return ret;
 }
 
-/* Extract raw disk image from dynamic VHD file
+/* Extract raw disk image from VHD file (dispatcher function)
  * 
- * Converts a dynamic VHD to a raw disk image by reading all allocated data blocks
- * and reconstructing the complete virtual disk. Zero-filled (unallocated) blocks
- * are written as actual zero bytes in the output file.
+ * Auto-detects VHD type (fixed vs dynamic) and dispatches to the appropriate
+ * extraction helper function. This provides a unified interface for extracting
+ * raw disk images from any VHD format.
  * 
- * Dynamic VHD Extraction Process:
- * 1. Read and validate dynamic VHD header for metadata
- * 2. Extract VHD footer to determine virtual disk size
- * 3. Load Block Allocation Table (BAT) to find allocated blocks
- * 4. For each logical block in virtual disk:
- *    - If BAT entry is 0xFFFFFFFF: write zeros (unallocated block)
- *    - If BAT entry is valid offset: read actual block data from VHD
- * 5. Each allocated block contains: sector bitmap + actual data
- * 6. Write reconstructed data to output raw image file
+ * VHD Type Detection and Dispatch:
+ * - Dynamic VHDs: Calls _extract_dynamic_vhd() for complex BAT-based extraction
+ * - Fixed VHDs: Calls _extract_fixed_vhd() for simple copy-and-strip operation
  * 
- * Fixed VHD Extraction Process.
- * 
- * Technical Implementation Details:
- * - Uses dynamic header to get BAT location and block size (typically 2MB)
- * - BAT entries are 32-bit big-endian values pointing to physical block offsets
- * - Each data block structure: 512-byte bitmap + N bytes of actual data
- * - Bitmap has 1 bit per 512-byte sector (1=allocated, 0=zero-filled)
- * - All multi-byte values converted from big-endian to host endianness
- * - Output raw image is exactly the virtual disk size from VHD footer
+ * Both extraction methods produce identical raw disk images that can be mounted
+ * or used directly as block devices
  * 
  * VHD Specification References:
  * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
+ *   Section: Block Allocation Table and Data Blocks
+ * 
+ * Additional references:
  * - GitHub libvhdi VHD format documentation and analysis
  *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
  * - Microsoft VHD Developer Blog (technical deep-dive)
  *   https://blogs.msdn.microsoft.com/virtual_pc_guy/2007/10/11/understanding-dynamic-vhd/
- * - SANS VHD forensics analysis and structure documentation
- *   https://www.sans.org/reading-room/whitepapers/forensics/virtual-hard-disk-vhd-analysis-33495
  * 
  * @param vhd_file: Path to source dynamic VHD file
  * @param raw_file: Path for output raw disk image (will be created/overwritten)
@@ -974,14 +973,42 @@ done:
     return ret;
 }
 
-/* Extract raw disk image from dynamic VHD
+/* Extract raw disk image from dynamic VHD (internal helper)
  * 
- * Internal helper function that handles the complex dynamic VHD extraction
- * process including BAT processing, block reconstruction, and sparse handling.
- * This contains the original cvmvhd_extract_raw_image() implementation.
+ * Handles the complex dynamic VHD extraction process including Block Allocation
+ * Table (BAT) processing, block reconstruction, and sparse block handling.
+ * 
+ * Dynamic VHD Extraction Algorithm:
+ * 1. Read and validate dynamic VHD header for metadata (BAT location, block size)
+ * 2. Extract VHD footer to determine total virtual disk size  
+ * 3. Load Block Allocation Table (BAT) to map logical to physical blocks
+ * 4. For each logical block in virtual disk:
+ *    - If BAT entry is 0xFFFFFFFF: write zeros (unallocated/sparse block)
+ *    - If BAT entry is valid offset: read actual block data from VHD file
+ * 5. Each allocated block structure: [sector bitmap][block data]
+ * 6. Skip bitmap, extract data, write to output raw image file
+ * 
+ * Technical Implementation Details:
+ * - Uses dynamic header to get BAT location and block size (typically 2MB)
+ * - BAT entries are 32-bit big-endian values pointing to physical sector offsets
+ * - Each data block: 512-byte sector bitmap + N bytes of actual data
+ * - Bitmap calculation: (block_size/512) bits rounded up to sector boundary
+ * - All multi-byte values converted from big-endian to host endianness
+ * - Output raw image is exactly the virtual disk size from VHD footer
+ * 
+ * VHD Specification References:
+ * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
+ *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
+ *   Section: Block Allocation Table and Data Blocks
+ * 
+ * Additional references:
+ * - GitHub libvhdi VHD format documentation and analysis
+ *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
+ * - Microsoft VHD Developer Blog (technical deep-dive)
+ *   https://blogs.msdn.microsoft.com/virtual_pc_guy/2007/10/11/understanding-dynamic-vhd/
  * 
  * @param vhd_file: Path to source dynamic VHD file  
- * @param raw_file: Path for output raw disk image
+ * @param raw_file: Path for output raw disk image (will be created/overwritten)
  * @param err: Error context for detailed error reporting
  * @return: 0 on success, -EINVAL on error
  */
@@ -999,7 +1026,7 @@ static int _extract_dynamic_vhd(const char* vhd_file, const char* raw_file, cvmv
     uint32_t block_size;
     uint64_t disk_size;
 
-    /* Verify this is a dynamic VHD and read header */
+    /* Step 1: Read and validate dynamic VHD header for metadata (BAT location, block size) */
     if (cvmvhd_read_dynamic_header(vhd_file, &header, err) < 0)
         goto done;
 
@@ -1012,7 +1039,7 @@ static int _extract_dynamic_vhd(const char* vhd_file, const char* raw_file, cvmv
     max_table_entries = _swapu32(header.max_table_entries);
     block_size = _swapu32(header.block_size);
 
-    /* Get disk size from footer */
+    /* Step 2: Extract VHD footer to determine total virtual disk size */
     if (!(vhd_stream = fopen(vhd_file, "rb")))
     {
         _err(err, "failed to open VHD file: %s", vhd_file);
@@ -1027,7 +1054,7 @@ static int _extract_dynamic_vhd(const char* vhd_file, const char* raw_file, cvmv
 
     disk_size = _swapu64(footer.current_size);
 
-    /* Allocate BAT array */
+    /* Step 3: Load Block Allocation Table (BAT) to map logical to physical blocks */
     bat = malloc(max_table_entries * sizeof(uint32_t));
     if (!bat)
     {
@@ -1063,22 +1090,66 @@ static int _extract_dynamic_vhd(const char* vhd_file, const char* raw_file, cvmv
         goto done;
     }
 
-    /* Extract blocks */
+    /* Step 4: Process each logical block in virtual disk (BAT-driven reconstruction)
+     * 
+     * BAT (Block Allocation Table) Implementation:
+     * - BAT is an array of 32-bit big-endian entries, one per logical block
+     * - Each BAT entry either points to a physical sector offset OR indicates unallocated
+     * - Entry value 0xFFFFFFFF = unallocated block (sparse, contains all zeros)
+     * - Other values = sector offset where allocated block begins in VHD file
+     * - Our BAT array 'bat[]' loaded from VHD file maps: bat[logical_block] = physical_sector
+     * - This allows dynamic VHDs to only store non-zero blocks, achieving space savings
+     */
     for (uint32_t i = 0; i < max_table_entries; i++)
     {
         uint32_t block_offset = _swapu32(bat[i]);
         
         if (block_offset == VHD_BAT_ENTRY_UNALLOCATED)
         {
-            /* Unallocated block - write zeros */
+            /* Step 4a: If BAT entry is 0xFFFFFFFF: write zeros (unallocated/sparse block) */
             memset(block_buffer, 0, block_size);
         }
         else
         {
-            /* Allocated block - read from VHD */
+            /* Step 4b: If BAT entry is valid sector offset: convert to file byte offset and read block
+             * - BAT entry gives us sector number (multiply by 512 to get byte offset)
+             * - At that file location we find: [sector bitmap][actual block data]
+             * - We must calculate bitmap size and skip over it to reach the actual data
+             */
             uint64_t file_offset = (uint64_t)block_offset * VHD_SECTOR_SIZE;
             
-            /* Skip block bitmap - bitmap size is (block_size / VHD_SECTOR_SIZE) bits, rounded up to sector boundary */
+            /* Step 4b.1: Calculate THIS block's sector bitmap size and skip it
+             * 
+             * VHD Block Structure (each allocated block has this format):
+             * [Block's own bitmap][Block's actual data]
+             * 
+             * Bitmap Purpose & Data Reconstruction:
+             * - EVERY allocated block starts with its own sector bitmap
+             * - This bitmap tells us which 512-byte sectors within THIS SPECIFIC block contain real data vs zeros
+             * - Bit = 1: corresponding sector in this block contains actual data
+             * - Bit = 0: corresponding sector in this block should be zeros
+             * 
+             * Our Implementation Choice (and Safety Analysis):
+             * - We COULD parse this block's bitmap and reconstruct sector-by-sector (spec-compliant)
+             * - Instead, we simplify: skip this block's bitmap and read the entire block as-is
+             * 
+             * Safety Analysis:
+             * - SAFE: If VHD stores full 2MB of data after bitmap (common case)
+             * - UNSAFE: If VHD only stores sectors marked with bit=1 (sparse within block)
+             * - RISK: We might read garbage data or get read errors for missing sectors
+             * - MITIGATION: Most VHD creators store full blocks to avoid complexity
+             * 
+             * 
+             * TODO: SECURITY/CORRECTNESS - Parse bitmap for full VHD spec compliance
+             * - Read bitmap bits to determine which sectors are actually allocated
+             * - Only read allocated sectors from VHD, fill unallocated with zeros
+             * - Prevents potential read errors and ensures correct reconstruction
+             * 
+             * Bitmap Size Calculation (for THIS block):
+             * - For 2MB block: 2,097,152 ÷ 512 = 4,096 sectors in this block
+             * - Need 4,096 bits in this block's bitmap = 512 bytes
+             * - VHD requires sector alignment: 512 bytes = 1 sector to skip
+             */
             uint32_t sectors_per_block = block_size / VHD_SECTOR_SIZE;
             uint32_t bitmap_size_bits = sectors_per_block;
             uint32_t bitmap_size_bytes = (bitmap_size_bits + 7) / 8;  /* Round up to bytes */
@@ -1098,7 +1169,7 @@ static int _extract_dynamic_vhd(const char* vhd_file, const char* raw_file, cvmv
             }
         }
 
-        /* Write block to raw file */
+        /* Step 4c: Write reconstructed block (zeros or actual data) to output raw image file */
         if (fwrite(block_buffer, 1, block_size, raw_stream) != block_size)
         {
             _err(err, "failed to write block %u to raw file", i);
@@ -1126,22 +1197,37 @@ done:
     return ret;
 }
 
-/* Extract raw disk image from fixed VHD
+/* Extract raw disk image from fixed VHD (internal helper)
  * 
- * Fixed VHDs have a simple structure: raw disk data followed by a 512-byte footer.
- * Extraction is accomplished by copying the VHD file and removing the footer.
+ * Handles the simple fixed VHD extraction process by copying the VHD file
+ * and removing the 512-byte footer to produce a raw disk image.
  * 
- * This function is completely self-contained, performing the copy operation
- * inline and then calling cvmvhd_remove() to eliminate the VHD footer.
+ * Fixed VHD Extraction Algorithm:
+ * 1. Validate input parameters and source VHD file existence
+ * 2. Copy entire VHD file to destination using system cp command
+ * 3. Remove VHD footer from copy using cvmvhd_remove()
+ * 4. Verify final raw image size and report success
  * 
- * References:
+ * Fixed VHD Structure (simple format):
+ * [Raw Disk Data - N bytes][VHD Footer - 512 bytes]
+ * 
+ * Technical Implementation:
+ * - Uses system cp command for efficient file copying
+ * - Calls cvmvhd_remove() to strip the trailing 512-byte VHD footer
+ * - Self-contained operation with proper error handling and cleanup
+ * - Output raw image is exactly (VHD_size - 512) bytes
+ * 
+ * VHD Specification References:
  * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
+ *   Section: Hard Disk Footer Format
+ * 
+ * Additional references:
  * - Fixed VHD Format Structure Documentation
  *   https://docs.microsoft.com/en-us/previous-versions/windows/desktop/legacy/dd323654(v=vs.85)
  * 
  * @param vhd_file: Path to source fixed VHD file
- * @param raw_file: Path for output raw disk image
+ * @param raw_file: Path for output raw disk image (will be created/overwritten)
  * @param err: Error context for detailed error reporting  
  * @return: 0 on success, -EINVAL on error
  */
@@ -1195,6 +1281,9 @@ static int _extract_fixed_vhd(const char* vhd_file, const char* raw_file, cvmvhd
 **
 ** Fixed to Dynamic VHD Conversion Implementation
 **
+** The following section of function contains helpers and core logic for converting a
+** fixed VHD file into a dynamic VHD file.
+
 ** References:
 ** - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
 **   https://www.microsoft.com/en-us/download/details.aspx?id=23850
@@ -1208,34 +1297,7 @@ static int _extract_fixed_vhd(const char* vhd_file, const char* raw_file, cvmvhd
 **==============================================================================
 */
 
-/* Efficient zero-block detection for space optimization
- * 
- * Performs fast byte-by-byte comparison to determine if an entire data block
- * contains only zero bytes. This is used during fixed→dynamic VHD conversion
- * to identify blocks that can be omitted from the dynamic VHD, achieving
- * significant space savings through sparse allocation.
- * 
- * Optimization Rationale (per VHD Specification v1.0):
- * - Dynamic VHDs use Block Allocation Table (BAT) to track allocated blocks
- * - Unallocated blocks are represented by 0xFFFFFFFF entries in BAT
- * - Zero blocks don't need physical storage - they're reconstructed as zeros
- * - This enables 50-95% space savings for sparse disk images
- * 
- * Performance Considerations:
- * - Simple linear scan is cache-friendly for typical 2MB block sizes
- * - Early exit on first non-zero byte for optimal average-case performance
- * - Called once per block during conversion, so efficiency is important
- * 
- * VHD Specification References:
- * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
- *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * - GitHub libvhdi VHD format documentation and analysis
- *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
- * 
- * @param data: Pointer to block data to analyze
- * @param size: Size of data block in bytes (typically 2MB = 2,097,152 bytes)
- * @return: 1 if block contains only zeros, 0 if any non-zero bytes found
- */
+/* Check if block contains only zero bytes (for VHD sparse optimization) */
 static int _is_block_zero(const uint8_t* data, size_t size)
 {
     for (size_t i = 0; i < size; i++)
@@ -1253,34 +1315,24 @@ static int _is_block_zero(const uint8_t* data, size_t size)
  * calculations follow VHD specification requirements for efficiency and
  * compatibility with Microsoft's VHD implementation.
  * 
- * Dynamic VHD Layout Calculation (per VHD Specification v1.0):
- * 1. Footer copy: 512 bytes (identical to footer at end)
- * 2. Dynamic header: 1024 bytes (contains metadata and BAT location)
- * 3. Block Allocation Table: 4 bytes × max_table_entries
- * 4. Data blocks: Variable size, containing sector bitmaps + actual data
- * 5. Footer: 512 bytes (standard VHD footer with checksum)
- * 
- * Block Size Selection Algorithm:
- * - Uses 2MB (2,097,152 bytes) as optimal balance of efficiency vs. overhead
- * - Larger blocks = less BAT entries but more wasted space for sparse data
- * - Smaller blocks = more BAT entries but better granularity for sparse data
- * - 2MB is Microsoft's recommended default and widely supported
- * 
- * BAT Size Calculation:
- * - Each BAT entry is 32-bit (4 bytes) pointing to physical block location
- * - Number of entries = ceil(virtual_disk_size / block_size)
- * - BAT is placed immediately after dynamic header at fixed offset 1536
+ * Dynamic VHD File Structure (per VHD Specification v1.0):
+ * - Bytes 0-511: Footer copy (VHD_FOOTER_SIZE - identical to footer at end)
+ * - Bytes 512-1535: Dynamic header (VHD_DYNAMIC_HEADER_OFFSET to VHD_DYNAMIC_HEADER_OFFSET+1023)
+ * - Bytes 1536+: Block Allocation Table (VHD_DYNAMIC_BAT_OFFSET - 4 bytes × max_table_entries)
+ * - Bytes BAT_end+: Data blocks (variable size, containing sector bitmaps + actual data)
+ * - Bytes file_end-511 to file_end: Footer (VHD_FOOTER_SIZE - standard VHD footer with checksum)
  * 
  * VHD Specification References:
  * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * - GitHub libvhdi VHD format documentation and analysis
- *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
+ *   Section: Block Allocation Table and Data Blocks
+ * 
+ * Additional references:
  * - Microsoft VHD Developer Blog (technical deep-dive)
  *   https://blogs.msdn.microsoft.com/virtual_pc_guy/2007/10/11/understanding-dynamic-vhd/
  * 
  * @param disk_size: Virtual disk size in bytes from source fixed VHD
- * @param block_size: [OUT] Calculated optimal block size (2MB = 2,097,152 bytes)
+ * @param block_size: [OUT] Calculated optimal block size (2MB)
  * @param max_table_entries: [OUT] Number of BAT entries needed to cover virtual disk
  * @param table_offset: [OUT] File offset where BAT begins (1536 bytes from start)
  * @return: 0 on success (always succeeds with valid input)
@@ -1291,23 +1343,27 @@ static int _calculate_dynamic_params(
     uint32_t* max_table_entries,
     uint64_t* table_offset)
 {
-    /* Use 2MB block size for optimal balance between overhead and efficiency
-     * This matches common VHD implementations and provides good compression
-     * while minimizing metadata overhead.
+    /* Block Size Selection Algorithm:
+     * - Uses 2MB as optimal balance of efficiency vs. overhead
+     * - Larger blocks = less BAT entries but more wasted space for sparse data
+     * - Smaller blocks = more BAT entries but better granularity for sparse data
+     * - 2MB is Microsoft's recommended default and widely supported
      */
-    *block_size = 2 * 1024 * 1024; /* 2MB = 2097152 bytes */
+    *block_size = VHD_DEFAULT_BLOCK_SIZE;
     
-    /* Calculate max table entries needed
-     * Each BAT entry covers one block, so we need enough entries to cover
-     * the entire logical disk size, rounded up to nearest block boundary.
+    /* BAT Size Calculation:
+     * - Each BAT entry is 32-bit (4 bytes) pointing to physical block location
+     * - Number of entries = ceil(virtual_disk_size / block_size)
+     * - Each BAT entry covers one block, so we need enough entries to cover
+     *   the entire logical disk size, rounded up to nearest block boundary
      */
     *max_table_entries = (uint32_t)((disk_size + *block_size - 1) / *block_size);
     
-    /* Calculate BAT offset: footer_copy(512) + dynamic_header(1024)
+    /* Calculate BAT offset: footer_copy + dynamic_header
      * Per VHD spec, dynamic VHD layout is:
      * [Footer Copy][Dynamic Header][Block Allocation Table][Data Blocks][Footer]
      */
-    *table_offset = 512 + 1024;
+    *table_offset = VHD_DYNAMIC_BAT_OFFSET;
     
     return 0;
 }
@@ -1320,7 +1376,7 @@ static int _calculate_dynamic_params(
  * 
  * Dynamic VHD Header Structure (1024 bytes, all offsets in big-endian):
  * - Bytes 0-7: Cookie "cxsparse" (identifies dynamic VHD header)
- * - Bytes 8-15: Data offset (0xFFFFFFFFFFFFFFFF = no additional structures)
+ * - Bytes 8-15: Data offset (0xFFFFFFFF = no additional structures)
  * - Bytes 16-23: Table offset (byte location of Block Allocation Table)
  * - Bytes 24-27: Header version (0x00010000 = VHD specification v1.0)
  * - Bytes 28-31: Max table entries (number of BAT entries for virtual disk)
@@ -1332,12 +1388,6 @@ static int _calculate_dynamic_params(
  * - Bytes 64-575: Parent Unicode name (zeros for standalone VHDs)
  * - Bytes 576-1023: Parent locator entries (8 entries × 24 bytes, zeros for standalone)
  * 
- * Checksum Calculation Algorithm (per VHD Specification):
- * 1. Initialize checksum to zero
- * 2. Sum all bytes in header except the 4-byte checksum field itself
- * 3. Take one's complement of the sum (bitwise NOT operation)
- * 4. Store result in big-endian format in checksum field
- * 
  * Endianness Handling:
  * - All multi-byte values stored in big-endian (network byte order)
  * - Manual byte-by-byte conversion used for cross-platform compatibility
@@ -1346,12 +1396,13 @@ static int _calculate_dynamic_params(
  * VHD Specification References:
  * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
+ *   Section: Dynamic Disk Header Format
+ * 
+ * Additional references:
  * - Microsoft Developer Network VHD Format (archived documentation)
  *   https://docs.microsoft.com/en-us/previous-versions/windows/desktop/legacy/dd323654(v=vs.85)
  * - GitHub libvhdi VHD format documentation and analysis
  *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
- * - SANS VHD forensics analysis and structure documentation
- *   https://www.sans.org/reading-room/whitepapers/forensics/virtual-hard-disk-vhd-analysis-33495
  * 
  * @param header: [OUT] Pointer to header structure to populate
  * @param footer: [IN] VHD footer from source fixed VHD (for UUID preservation)
@@ -1398,16 +1449,22 @@ static int _create_dynamic_header(
     header->max_table_entries = _swapu32(max_table_entries);
     header->block_size = _swapu32(block_size);
     
-    /* Calculate checksum (sum of all fields except checksum itself)
-     * Per VHD spec: checksum = one's complement of sum of all other bytes
+    /* Dynamic Header Checksum Calculation (per VHD Specification Section: Dynamic Disk Header Format):
+     * NOTE: This checksum covers ONLY the 1024-byte dynamic header
+     * 1. Initialize checksum to zero
+     * 2. Sum all bytes in this header except the 4-byte checksum field itself
+     * 3. Take one's complement of the sum (bitwise NOT operation)
+     * 4. Store result in big-endian format in checksum field
      */
-    header->checksum = 0; /* Clear first */
+    header->checksum = 0; /* Step 1: Initialize checksum to zero */
     uint32_t checksum = 0;
     uint8_t* bytes = (uint8_t*)header;
+    /* Step 2: Sum all bytes in header except the checksum field */
     for (size_t i = 0; i < sizeof(vhd_dynamic_header_t); i++) {
         checksum += bytes[i];
     }
-    header->checksum = _swapu32(~checksum); /* One's complement in big-endian */
+    /* Step 3 & 4: Take one's complement and store in big-endian format */
+    header->checksum = _swapu32(~checksum);
     
     return 0;
 }
@@ -1417,44 +1474,27 @@ static int _create_dynamic_header(
  * This function implements fixed-to-dynamic VHD conversion according to the
  * Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0.
  * 
- * ALGORITHM OVERVIEW:
- * 1. Parse fixed VHD footer to extract disk parameters
- * 2. Calculate optimal dynamic VHD structure (block size, BAT size, offsets)
- * 3. Create dynamic VHD file with proper header structures
- * 4. Analyze fixed VHD data to identify non-zero blocks
- * 5. Build Block Allocation Table (BAT) mapping logical to physical blocks
- * 6. Write allocated blocks with proper sector bitmaps
- * 7. Finalize with VHD footer
- * 
- * SPACE SAVINGS:
- * Dynamic VHDs only allocate space for blocks containing actual data,
- * while zero blocks are represented as unallocated entries (0xFFFFFFFF) in the BAT.
- * This can provide 50-95% space savings for sparse fixed VHDs.
- * 
  * VHD STRUCTURE CREATED:
- * [Footer Copy - 512 bytes]
- * [Dynamic Header - 1024 bytes] 
- * [Block Allocation Table - max_table_entries * 4 bytes]
- * [Data Blocks - variable, only allocated blocks]
- *   Each block: [Sector Bitmap][Block Data]
- * [Footer - 512 bytes]
+ * - Bytes 0-511: Footer copy (VHD_FOOTER_SIZE - identical to footer at end)
+ * - Bytes 512-1535: Dynamic header (VHD_DYNAMIC_HEADER_OFFSET to VHD_DYNAMIC_HEADER_OFFSET+1023)
+ * - Bytes 1536+: Block Allocation Table (VHD_DYNAMIC_BAT_OFFSET - 4 bytes × max_table_entries)
+ * - Bytes BAT_end+: Data blocks (variable size, only allocated blocks)
+ *   Each allocated block: [Sector Bitmap][Block Data]
+ * - Bytes file_end-511 to file_end: Footer (VHD_FOOTER_SIZE - standard VHD footer with checksum)
  * 
  * ENDIANNESS HANDLING:
  * All multi-byte values in VHD structures must be stored in big-endian format
- * per the VHD specification. This includes BAT entries, header fields, and
- * footer fields.
  * 
- * REFERENCES:
+ * VHD Specification References:
  * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * - VHD Format Specification (Microsoft Docs Legacy)
- *   https://docs.microsoft.com/en-us/previous-versions/windows/desktop/legacy/dd323654(v=vs.85)
- * - Virtual Hard Disk Format Specification (GitHub mirror with detailed analysis)
+ *   Sections: Dynamic Disk Header Format, Block Allocation Table and Data Blocks
+ * 
+ * Additional references:
+ * - GitHub libvhdi VHD format documentation and analysis
  *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
- * - VHD Dynamic Disk Understanding (Microsoft Developer Blog)
+ * - Microsoft VHD Developer Blog (technical deep-dive)
  *   https://blogs.msdn.microsoft.com/virtual_pc_guy/2007/10/11/understanding-dynamic-vhd/
- * - VHD File Format Analysis (Forensics perspective)
- *   https://www.sans.org/reading-room/whitepapers/forensics/virtual-hard-disk-vhd-analysis-33495
  */
 int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dynamic_vhd_file, cvmvhd_error_t* err)
 {
@@ -1490,7 +1530,7 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
         goto done;
     }
     
-    /* Load VHD footer */
+    /* Step 1: Parse fixed VHD footer to extract disk parameters */
     if (_load_vhd_footer(fixed_stream, &footer) < 0)
     {
         _err(err, "failed to load VHD footer");
@@ -1502,7 +1542,9 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
     uint32_t block_size, max_table_entries;
     uint64_t table_offset;
     
-    /* Calculate dynamic VHD parameters */
+    /* Step 2: Calculate optimal dynamic VHD structure (block size, BAT size, offsets)
+     * VHD Spec: Dynamic Disk Header Format section - defines BAT structure and block organization
+     */
     if (_calculate_dynamic_params(disk_size, &block_size, &max_table_entries, &table_offset) < 0)
     {
         _err(err, "failed to calculate dynamic VHD parameters");
@@ -1516,17 +1558,19 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
         goto done;
     }
     
-    /* Step 1: Write footer copy
+    /* Step 3: Write footer copy (create dynamic VHD file structure)
      * Dynamic VHDs begin with a copy of the footer at the start of the file.
      * This allows VHD tools to quickly identify the VHD type and parameters.
+     * VHD Spec: Hard Disk Footer Format section - footer must appear at start and end
      */
     vhd_footer_t footer_copy = footer;
     /* Update footer for dynamic VHD */
     footer_copy.disk_type = _swapu32(VHD_TYPE_DYNAMIC);
-    /* Set data_offset to point to dynamic header (offset 512)
-     * This tells VHD readers where to find the dynamic header structure
+    /* Set data_offset to point to dynamic header (after footer copy)
+     * This tells VHD readers where to find the dynamic header structure  
+     * [Footer Copy]|---|[Dynamic Header][Block Allocation Table][Data Blocks][Footer]
      */
-    uint64_t data_offset = 512;
+    uint64_t data_offset = VHD_FOOTER_SIZE;
     for (int i = 0; i < 8; i++) {
         footer_copy.data_offset[i] = (data_offset >> (56 - 8 * i)) & 0xFF;
     }
@@ -1540,7 +1584,7 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
         goto done;
     }
     
-    /* Step 2: Create and write dynamic header */
+    /* Step 4: Create and write dynamic header (continued file structure setup) */
     if (_create_dynamic_header(&header, &footer, max_table_entries, block_size, table_offset) < 0)
     {
         _err(err, "Failed to compact VHD: cannot create dynamic header");
@@ -1553,7 +1597,7 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
         goto done;
     }
     
-    /* Step 3: Allocate and initialize BAT
+    /* Step 5: Allocate and initialize BAT
      * The Block Allocation Table (BAT) is an array of 32-bit entries that map
      * logical block numbers to physical sector offsets in the dynamic VHD file.
      * 
@@ -1561,7 +1605,7 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
      * - 0xFFFFFFFF: Block is unallocated (contains all zeros)
      * - Other values: Sector offset where allocated block begins
      * 
-     * All BAT entries must be stored in big-endian format per VHD spec.
+     * VHD Spec: Block Allocation Table and Data Blocks section - defines BAT format and usage
      */
     bat = malloc(max_table_entries * sizeof(uint32_t));
     if (!bat)
@@ -1570,7 +1614,7 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
         goto done;
     }
     
-    /* Initialize all BAT entries as unallocated (VHD_BAT_ENTRY_UNALLOCATED in big-endian) */
+    /* Initialize all BAT entries as unallocated (VHD_BAT_ENTRY_UNALLOCATED) */
     for (uint32_t i = 0; i < max_table_entries; i++)
     {
         bat[i] = _swapu32(VHD_BAT_ENTRY_UNALLOCATED);
@@ -1578,7 +1622,7 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
     
     printf("Analyzing fixed VHD blocks for compaction...\n");
     
-    /* Step 4: Analyze fixed VHD and build BAT
+    /* Step 6: Analyze fixed VHD data to identify non-zero blocks
      * 
      * This is the core optimization step where we scan through every logical
      * block in the fixed VHD to determine which blocks contain actual data
@@ -1617,7 +1661,7 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
         uint64_t fixed_offset = (uint64_t)block_idx * block_size;
         size_t read_size = block_size;
         
-        /* Handle last block which might be partial */
+        /* Handle last block which might be partial - adjust read size and zero-pad remainder */
         if (fixed_offset + block_size > disk_size)
         {
             read_size = disk_size - fixed_offset;
@@ -1630,7 +1674,7 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
             goto done;
         }
         
-        memset(block_buffer, 0, block_size); /* Clear buffer */
+        memset(block_buffer, 0, block_size); 
         if (read_size > 0 && fread(block_buffer, 1, read_size, fixed_stream) != read_size)
         {
             _err(err, "Failed to compact VHD: cannot read block %u from fixed VHD", block_idx);
@@ -1673,7 +1717,7 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
            allocated_blocks, max_table_entries, 
            100.0 * (max_table_entries - allocated_blocks) / max_table_entries);
     
-    /* Step 5: Write BAT */
+    /* Step 7: Write BAT (Block Allocation Table mapping) */
     if (fseek(dynamic_stream, table_offset, SEEK_SET) != 0)
     {
         _err(err, "Failed to compact VHD: cannot seek to BAT offset");
@@ -1686,7 +1730,7 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
         goto done;
     }
     
-    /* Step 6: Write allocated blocks with bitmaps */
+    /* Step 8: Write allocated blocks with proper sector bitmaps */
     printf("Writing dynamic VHD blocks...\n");
     
     for (uint32_t block_idx = 0; block_idx < max_table_entries; block_idx++)
@@ -1779,7 +1823,7 @@ int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dyna
         }
     }
     
-    /* Step 7: Write final footer */
+    /* Step 9: Finalize with VHD footer */
     if (fwrite(&footer_copy, sizeof(vhd_footer_t), 1, dynamic_stream) != 1)
     {
         _err(err, "Failed to compact VHD: cannot write final footer");

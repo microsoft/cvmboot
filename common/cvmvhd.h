@@ -13,7 +13,7 @@ typedef struct vhd_footer vhd_footer_t;
 /* VHD disk types as defined in Microsoft VHD specification
  * Reference: Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  * https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * Section: VHD Footer Format, Disk Type field
+ * Section: Hard Disk Footer Format, Disk Type field
  */
 #define VHD_TYPE_NONE       0  /* No disk type specified */
 #define VHD_TYPE_RESERVED1  1  /* Reserved (deprecated) */
@@ -27,14 +27,13 @@ typedef struct vhd_footer vhd_footer_t;
  * Reference: Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  * https://www.microsoft.com/en-us/download/details.aspx?id=23850
  */
-#define VHD_FOOTER_SIZE         512   /* Section: VHD Footer Format - footer is always 512 bytes */
+#define VHD_FOOTER_SIZE         512   /* Section: Hard Disk Footer Format - footer is always 512 bytes */
 #define VHD_DYNAMIC_HEADER_SIZE 1024  /* Section: Dynamic Disk Header Format - header is always 1024 bytes */
-#define VHD_SECTOR_SIZE         512   /* Section: General - VHD uses 512-byte sectors throughout */
+#define VHD_SECTOR_SIZE         512   /* VHD uses 512-byte sectors throughout (per specification) */
 
 /* Dynamic VHD layout offsets as per VHD specification
  * Reference: Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  * https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * Section: Dynamic Disk Format Layout
  * 
  * Dynamic VHD structure: [Footer Copy][Dynamic Header][BAT][Data Blocks][Footer]
  */
@@ -50,7 +49,7 @@ typedef struct vhd_footer vhd_footer_t;
 /* VHD Block Allocation Table (BAT) constants
  * Reference: Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  * https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * Section: Dynamic Disk Format - Block Allocation Table
+ * Section: Block Allocation Table and Data Blocks
  */
 #define VHD_BAT_ENTRY_UNALLOCATED   0xFFFFFFFF  /* BAT entry value for unallocated blocks */
 
@@ -62,10 +61,18 @@ typedef struct vhd_footer vhd_footer_t;
 /* VHD I/O buffer sizes for optimal performance */
 #define VHD_COPY_BUFFER_SIZE        (64 * 1024) /* 64KB buffer for efficient file copying */
 
+/* Implementation-defined security limits (not from VHD specification)
+ * These prevent memory exhaustion attacks from malicious VHD files while
+ * supporting all legitimate VHD use cases. Values chosen based on practical
+ * system resource constraints and common VHD implementation patterns.
+ */
+#define VHD_MAX_BLOCK_SIZE          (64 * 1024 * 1024)  /* 64MB - security limit for block buffer allocation */
+#define VHD_MAX_BAT_ENTRIES         (1024 * 1024)       /* 1M entries - security limit for BAT allocation (supports 2TB with 2MB blocks) */
+
 /* Disk geometry structure as defined in VHD specification
  * Reference: Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  * https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * Section: VHD Footer Format, Disk Geometry field
+ * Section: Hard Disk Footer Format, Disk Geometry field
  * 
  * Uses CHS (Cylinder-Head-Sector) addressing scheme for disk geometry.
  * For disks > 127GB, values are calculated using specific algorithm in spec.
@@ -85,10 +92,8 @@ disk_geometry_t;
  * Reference: Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  * https://www.microsoft.com/en-us/download/details.aspx?id=23850
  * Section: Dynamic Disk Header Format
- * 
+ *
  * Additional references:
- * - VHD Format Documentation (GitHub libvhdi project)
- *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
  * - Microsoft Developer Network VHD Format (archived)
  *   https://docs.microsoft.com/en-us/previous-versions/windows/desktop/legacy/dd323654(v=vs.85)
  * 
@@ -124,11 +129,9 @@ typedef struct vhd_dynamic_header
  * 
  * Reference: Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
  * https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * Section: VHD Footer Format
+ * Section: Hard Disk Footer Format
  * 
  * Additional references:
- * - VHD Format Documentation (SANS forensics analysis)
- *   https://www.sans.org/reading-room/whitepapers/forensics/virtual-hard-disk-vhd-analysis-33495
  * - Microsoft VHD Blog (developer perspective)
  *   https://blogs.msdn.microsoft.com/virtual_pc_guy/2007/10/11/understanding-dynamic-vhd/
  * 
@@ -167,9 +170,6 @@ cvmvhd_error_t;
  * 
  * Used by cvmvhd_get_type() to identify VHD format variants based on header analysis.
  * Supports the two primary VHD formats defined in the Microsoft specification.
- * 
- * Reference: Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
- * https://www.microsoft.com/en-us/download/details.aspx?id=23850
  */
 typedef enum {
     CVMVHD_TYPE_UNKNOWN = VHD_TYPE_NONE,  /* Unable to determine VHD type or invalid VHD */
@@ -187,127 +187,12 @@ int cvmvhd_remove(const char* vhd_file, cvmvhd_error_t* err);
 
 int cvmvhd_dump(const char* vhd_file, cvmvhd_error_t* err);
 
-/* ==============================================================================
- * DYNAMIC VHD SUPPORT FUNCTIONS
- * ==============================================================================
- * 
- * The following functions implement comprehensive dynamic VHD support including
- * format detection, header parsing, data extraction, and bidirectional conversion.
- * 
- * All implementations follow Microsoft VHD Image Format Specification v1.0:
- * https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * 
- * Additional technical references:
- * - GitHub libvhdi VHD format analysis:
- *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
- * - Microsoft Developer Network VHD documentation (archived):
- *   https://docs.microsoft.com/en-us/previous-versions/windows/desktop/legacy/dd323654(v=vs.85)
- * - VHD forensics analysis and technical details:
- *   https://www.sans.org/reading-room/whitepapers/forensics/virtual-hard-disk-vhd-analysis-33495
- */
-
-/* Detect VHD format type (fixed, dynamic, or unknown)
- * 
- * Analyzes VHD footer and header structures to determine the format type.
- * Essential for proper handling of different VHD variants.
- * 
- * @param vhd_file: Path to VHD file to analyze
- * @param err: Error context for detailed error reporting
- * @return: VHD type enumeration (CVMVHD_TYPE_FIXED, CVMVHD_TYPE_DYNAMIC, or CVMVHD_TYPE_UNKNOWN)
- */
 cvmvhd_type_t cvmvhd_get_type(const char* vhd_file, cvmvhd_error_t* err);
 
-/* Read and parse dynamic VHD header structure
- * 
- * Extracts the dynamic header from a dynamic VHD file, providing access to
- * critical metadata including BAT offset, block size, and allocation parameters.
- * Only works with dynamic VHDs - returns error for fixed VHDs.
- * 
- * @param vhd_file: Path to dynamic VHD file
- * @param header: Output buffer for parsed dynamic header structure
- * @param err: Error context for detailed error reporting  
- * @return: 0 on success, -1 on error
- */
 int cvmvhd_read_dynamic_header(const char* vhd_file, vhd_dynamic_header_t* header, cvmvhd_error_t* err);
 
-/* Extract raw disk image from VHD file (unified dynamic/fixed support)
- * 
- * Automatically detects VHD format (dynamic or fixed) and extracts the raw 
- * disk image using the appropriate method. This unified function provides
- * seamless extraction from both VHD formats without requiring format detection.
- * 
- * Dynamic VHD Processing:
- * - Reconstructs disk image from Block Allocation Table (BAT) and data blocks
- * - Handles sparse allocation with zero-filled unallocated blocks
- * - Processes sector bitmaps and block boundary alignment
- * 
- * Fixed VHD Processing:
- * - Direct extraction of pre-allocated disk data (file size - 512 byte footer)
- * - Simple and efficient linear data copy operation
- * - Validates file structure and disk size parameters
- * 
- * Implementation details:
- * - Uses cvmvhd_get_type() for automatic format detection
- * - Follows Microsoft VHD specification for both formats
- * - Maintains data integrity through comprehensive validation
- * - Handles big-endian to host byte order conversion
- * - Provides detailed error reporting for troubleshooting
- * 
- * Supported VHD Types:
- * - Dynamic VHD: Sparse allocation with BAT-based block management
- * - Fixed VHD: Pre-allocated disk image with footer-only metadata
- * 
- * References:
- * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
- *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * - VHD Format Specification (Microsoft Docs Legacy)
- *   https://docs.microsoft.com/en-us/previous-versions/windows/desktop/legacy/dd323654(v=vs.85)
- * 
- * @param vhd_file: Path to source VHD file (dynamic or fixed format)
- * @param raw_file: Path for output raw disk image file
- * @param err: Error context for detailed error reporting
- * @return: 0 on success, -1 on error
- */
 int cvmvhd_extract_raw_image(const char* vhd_file, const char* raw_file, cvmvhd_error_t* err);
 
-/* Convert fixed VHD to dynamic VHD (space-efficient compaction)
- * 
- * Converts a fixed VHD to a space-efficient dynamic VHD by analyzing each 2MB
- * data block and only allocating blocks that contain non-zero data. This can
- * achieve 50-95% space savings depending on actual disk usage patterns.
- * 
- * VHD Specification Compliance:
- * - Microsoft Virtual Hard Disk (VHD) Image Format Specification v1.0
- *   https://www.microsoft.com/en-us/download/details.aspx?id=23850
- * - Microsoft Developer Network VHD Format (archived documentation)
- *   https://docs.microsoft.com/en-us/previous-versions/windows/desktop/legacy/dd323654(v=vs.85)
- * - GitHub libvhdi VHD format documentation and analysis
- *   https://github.com/libyal/libvhdi/blob/main/documentation/Virtual%20Hard%20Disk%20(VHD)%20image%20format.asciidoc
- * - Microsoft VHD Developer Blog (technical deep-dive)
- *   https://blogs.msdn.microsoft.com/virtual_pc_guy/2007/10/11/understanding-dynamic-vhd/
- * - SANS VHD forensics analysis and structure documentation
- *   https://www.sans.org/reading-room/whitepapers/forensics/virtual-hard-disk-vhd-analysis-33495
- * 
- * Dynamic VHD Structure Created:
- * 1. Footer copy (512 bytes) - identical to footer at end
- * 2. Dynamic header (1024 bytes) - contains "cxsparse" cookie and BAT metadata
- * 3. Block Allocation Table (BAT) - maps logical blocks to physical offsets
- * 4. Data blocks - each contains sector bitmap + actual block data
- * 5. Footer (512 bytes) - standard VHD footer with proper checksum
- * 
- * Technical Implementation Details:
- * - Uses 2MB block size (2,097,152 bytes) as recommended by VHD specification
- * - BAT entries are 32-bit big-endian values (0xFFFFFFFF = unallocated)
- * - Each data block starts with 512-byte sector bitmap (1 bit per 512-byte sector)
- * - All multi-byte values converted to big-endian format per VHD specification
- * - Footer checksum calculated using complement sum algorithm from spec
- * - Unique VHD UUID preserved from source fixed VHD
- * 
- * @param fixed_vhd_file: Path to source fixed VHD file
- * @param dynamic_vhd_file: Path for output dynamic VHD file (must not exist)
- * @param err: Error context for detailed error reporting
- * @return: 0 on success, -1 on error
- */
 int cvmvhd_compact_fixed_to_dynamic(const char* fixed_vhd_file, const char* dynamic_vhd_file, cvmvhd_error_t* err);
 
 #endif /* _CVMBOOT_COMMON_CVMVHD_H */

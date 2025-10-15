@@ -3303,6 +3303,8 @@ Options:\n\
         rootfs partition.\n\
     --no-strip\n\
         Do not strip the EXT4 rootfs partition.\n\
+    --force-hyperv-console\n\
+        Force Hyper-V console settings in the kernel command line.\n\
 \n\
 Description:\n\
     This subcommand prepares a VM disk image for integrity protection by\n\
@@ -3507,6 +3509,8 @@ Options:\n\
         Verify the verity and thin partitions.\n\
     --no-strip\n\
         Do not strip the EXT4 rootfs partition.\n\
+    --force-hyperv-console\n\
+        Force Hyper-V console settings in the kernel command line.\n\
 \n\
 Description:\n\
     This subcommand both prepares and protects a VM disk image. It is\n\
@@ -3560,8 +3564,6 @@ static int _subcommand_init(
     // Convert VHDX to VHD (if needed)
     if (_is_vhdx_path(input_disk))
     {
-        const char opts[] = "-o subformat=fixed,force_size";
-        char cmd[2 * PATH_MAX];
 
         if (_vhdx_path_to_vhd_path(input_disk, input_disk_vhd_buf) < 0)
             ERR("cannot convert vhdx path to vhd path");
@@ -3569,17 +3571,9 @@ static int _subcommand_init(
         printf("%s>>> Converting %s to %s...%s\n",
             colors_green, input_disk, input_disk_vhd_buf, colors_reset);
 
-        snprintf(cmd, sizeof(cmd),
-            "qemu-img convert %s -f vhdx -O vpc %s %s -p",
-            opts, input_disk, input_disk_vhd_buf);
-
-        printf("%s\n", cmd);
-
-        if (system(cmd) != 0)
-        {
-            fprintf(stderr, "Command failed: '%s'", cmd);
-            exit(1);
-        }
+        cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
+        if (cvmvhd_vhdx2vhd(input_disk, input_disk_vhd_buf, &err) < 0)
+            ERR("conversion failed: %s => %s", input_disk, input_disk_vhd_buf);
 
         input_disk = input_disk_vhd_buf;
     }
@@ -3645,23 +3639,11 @@ static int _subcommand_init(
     // Convert VHD to VHDX (if needed)
     if (output_disk == output_disk_vhd_buf)
     {
-        char cmd[PATH_MAX * 4];
-
+        cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
         printf("%s>>> Converting %s to %s...%s\n",
             colors_green, output_disk, original_output_disk, colors_reset);
-
-        snprintf(cmd, sizeof(cmd),
-            "qemu-img convert -f vpc -O vhdx %s %s -p",
-            output_disk, original_output_disk);
-
-        printf("%s\n", cmd);
-
-        if (system(cmd) != 0)
-        {
-            fprintf(stderr, "Command failed: '%s'", cmd);
-            exit(1);
-        }
-
+        if (cvmvhd_vhd2vhdx(output_disk, original_output_disk, &err) < 0)
+            ERR("conversion failed: %s => %s", output_disk, original_output_disk);
         unlink(output_disk);
     }
 
@@ -4030,81 +4012,7 @@ static int _subcommand_copy(int argc, const char* argv[])
     return ret;
 }
 
-static int _subcommand_vhdx2vhd(int argc, const char* argv[])
-{
-    int ret = 0;
 
-    // Check arguments
-    if (argc != 4)
-    {
-        printf("Usage: %s %s <vhdx-input-disk> <vhd-output-disk>\n",
-            argv[0], argv[1]);
-        exit(1);
-    }
-
-    const char* input_disk = argv[2];
-    const char* output_disk = argv[3];
-
-    // Perform the conversion
-    {
-        char cmd[3 * PATH_MAX];
-
-        printf("Converting %s to %s...\n", input_disk, output_disk);
-
-        snprintf(cmd, sizeof(cmd),
-            "qemu-img convert %s -f vhdx -O vpc %s %s -p",
-            "-o subformat=fixed,force_size",
-            input_disk,
-            output_disk);
-
-        printf("%s\n", cmd);
-
-        if (system(cmd) != 0)
-        {
-            fprintf(stderr, "Command failed: '%s'", cmd);
-            exit(1);
-        }
-    }
-
-    return ret;
-}
-
-static int _subcommand_vhd2vhdx(int argc, const char* argv[])
-{
-    int ret = 0;
-
-    // Check arguments
-    if (argc != 4)
-    {
-        printf("Usage: %s %s <vhd-input-disk> <vhdx-output-disk>\n",
-            argv[0], argv[1]);
-        exit(1);
-    }
-
-    const char* input_disk = argv[2];
-    const char* output_disk = argv[3];
-
-    // Perform the conversion
-    {
-        char cmd[3 * PATH_MAX];
-
-        printf("Converting %s to %s...\n", input_disk, output_disk);
-
-        snprintf(cmd, sizeof(cmd),
-            "qemu-img convert -f vpc -O vhdx %s %s -p",
-            input_disk, output_disk);
-
-        printf("%s\n", cmd);
-
-        if (system(cmd) != 0)
-        {
-            fprintf(stderr, "Command failed: '%s'", cmd);
-            exit(1);
-        }
-    }
-
-    return ret;
-}
 
 static int _subcommand_azcopy(int argc, const char* argv[])
 {
@@ -4567,14 +4475,6 @@ int main(int argc, const char* argv[])
     else if (strcmp(subcommand, "copy") == 0)
     {
         _subcommand_copy(argc, argv);
-    }
-    else if (strcmp(subcommand, "vhdx2vhd") == 0)
-    {
-        _subcommand_vhdx2vhd(argc, argv);
-    }
-    else if (strcmp(subcommand, "vhd2vhdx") == 0)
-    {
-        _subcommand_vhd2vhdx(argc, argv);
     }
     else
     {

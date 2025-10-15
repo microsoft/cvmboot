@@ -58,4 +58,8 @@ int cvmvhd_remove(const char* vhd_file, cvmvhd_error_t* err);
 
 int cvmvhd_dump(const char* vhd_file, cvmvhd_error_t* err);
 
+int cvmvhd_vhdx2vhd(const char* input_disk, const char* output_disk, cvmvhd_error_t* err);
+
+int cvmvhd_vhd2vhdx(const char* input_disk, const char* output_disk, cvmvhd_error_t* err);
+
 #endif /* _CVMBOOT_COMMON_CVMVHD_H */

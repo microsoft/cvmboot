@@ -9,6 +9,8 @@
 #include <sys/random.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <limits.h>
+#include <stdlib.h> 
 #include "cvmvhd.h"
 
 /*
@@ -617,5 +619,55 @@ done:
     if (stream)
         fclose(stream);
 
+    return ret;
+}
+
+int cvmvhd_vhdx2vhd(const char* input_disk, const char* output_disk, cvmvhd_error_t* err)
+{
+    int ret = -EINVAL;
+    _clear_err(err);
+
+    // Perform the conversion
+    char cmd[3 * PATH_MAX];
+    snprintf(cmd, sizeof(cmd),
+        "qemu-img convert %s -f vhdx -O vpc %s %s -p",
+        "-o subformat=fixed,force_size",
+        input_disk,
+        output_disk);
+
+    ret = system(cmd);
+    if (ret != 0)
+    {
+        _err(err, "Command failed: '%s'", cmd);
+        goto done;
+    }
+
+    ret = 0;
+
+done:
+    return ret;
+}
+
+int cvmvhd_vhd2vhdx(const char* input_disk, const char* output_disk, cvmvhd_error_t* err)
+{
+    int ret = -EINVAL;
+    _clear_err(err);
+
+    // Perform the conversion
+    char cmd[3 * PATH_MAX];
+    snprintf(cmd, sizeof(cmd),
+        "qemu-img convert -f vpc -O vhdx %s %s -p",
+        input_disk, output_disk);
+
+    ret = system(cmd);
+    if (ret != 0)
+    {
+        _err(err, "Command failed: '%s'", cmd);
+        goto done;
+    }
+
+    ret = 0;
+
+done:
     return ret;
 }

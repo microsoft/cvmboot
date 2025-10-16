@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <common/cvmvhd.h>
 
 const char* g_arg0;
@@ -158,6 +159,73 @@ static int _subcommand_remove(int argc, const char* argv[])
     return 0;
 }
 
+
+static int _subcommand_convert(int argc, const char* argv[])
+{
+    if (argc != 4)
+    {
+        printf("Usage: %s %s <input-disk> <output-disk>\n", argv[0], argv[1]);
+        printf("       Converts between VHD and VHDX formats (auto-detects based on file extensions)\n");
+        exit(1);
+    }
+
+    cvmvhd_error_t err = CVMVHD_ERROR_INITIALIZER;
+    const char* input_disk = argv[2];
+    const char* output_disk = argv[3];
+
+
+    // Determine format based on file extensions
+    bool input_is_vhd = false, input_is_vhdx = false;
+    bool output_is_vhd = false, output_is_vhdx = false;
+    
+    // Check input file extension
+    size_t input_len = strlen(input_disk);
+    if (input_len >= 4 && strcasecmp(input_disk + input_len - 4, ".vhd") == 0)
+        input_is_vhd = true;
+    else if (input_len >= 5 && strcasecmp(input_disk + input_len - 5, ".vhdx") == 0)
+        input_is_vhdx = true;
+    
+    // Check output file extension
+    size_t output_len = strlen(output_disk);
+    if (output_len >= 4 && strcasecmp(output_disk + output_len - 4, ".vhd") == 0)
+        output_is_vhd = true;
+    else if (output_len >= 5 && strcasecmp(output_disk + output_len - 5, ".vhdx") == 0)
+        output_is_vhdx = true;
+    
+    // Validate formats and call appropriate conversion function
+    if (input_is_vhdx && output_is_vhd)
+    {
+        printf("Auto-detected: VHDX to VHD conversion\n");
+        if (cvmvhd_vhdx2vhd(input_disk , output_disk, &err) < 0)
+        {
+            _err("%s", err.buf);
+        }
+    }
+    else if (input_is_vhd && output_is_vhdx)
+    {
+        printf("Auto-detected: VHD to VHDX conversion\n");
+        if (cvmvhd_vhd2vhdx(input_disk, output_disk, &err) < 0)
+        {
+            _err("%s", err.buf);
+        }
+    }
+    else if (input_is_vhd && output_is_vhd)
+    {
+        _err("Both input and output are VHD format - no conversion needed");
+    }
+    else if (input_is_vhdx && output_is_vhdx)
+    {
+        _err("Both input and output are VHDX format - no conversion needed");
+    }
+    else
+    {
+        _err("Unable to determine file formats from extensions. Supported: .vhd, .vhdx");
+    }
+    
+    return 0;
+}
+
+
 #define USAGE \
 "Usage: %s subcommand arguments...\n" \
 "\n" \
@@ -167,6 +235,7 @@ static int _subcommand_remove(int argc, const char* argv[])
 "    append <vhd-file> -- append VHD trailer to file (or replace)\n" \
 "    remove <vhd-file> -- remove VHD trailer from VHD file (if any)\n" \
 "    dump <vhd-file> -- dump VHD trailer\n" \
+"    convert <input-disk> <output-disk> -- convert between VHD and VHDX formats (auto-detects based on file extensions)\n" \
 "\n"
 
 int main(int argc, const char* argv[])
@@ -199,6 +268,10 @@ int main(int argc, const char* argv[])
     else if (strcmp(argv[1], "remove") == 0)
     {
         return _subcommand_remove(argc, argv);
+    }
+    else if (strcmp(argv[1], "convert") == 0)
+    {
+        return _subcommand_convert(argc, argv);
     }
     else
     {

@@ -624,7 +624,6 @@ done:
 
 int cvmvhd_vhdx2vhd(const char* input_disk, const char* output_disk, cvmvhd_error_t* err)
 {
-
     int ret = -EINVAL;
     _clear_err(err);
 
@@ -666,7 +665,7 @@ int cvmvhd_vhd2vhdx(const char* input_disk, const char* output_disk, cvmvhd_erro
         _err(err, "Command failed: '%s'", cmd);
         goto done;
     }
-    
+
     ret = 0;
 
 done:

@@ -69,6 +69,7 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE* system_table)
     const BOOLEAN trace = FALSE;
     err_t err;
     sig_t sig;
+    bootloader_sig_t bootloader_sig;
     CHAR16 cpio_path[PATH_MAX];
     void* cpio_data = NULL;
     UINTN cpio_size = 0;
@@ -149,8 +150,8 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE* system_table)
             system_reset();
         }
 
-        /* Verify the signature against the signature structure */
-        if (sig_verify(&sig) < 0)
+        /* Convert on-disk sig to bootloader_sig (with only fields for verification) and verify */
+        if (sig_convert_and_verify(&sig, &bootloader_sig) < 0)
         {
             Print(L"Failed to verify signature against exponent/modulus");
             pause(NULL);
@@ -193,12 +194,12 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE* system_table)
         void* data = NULL;
         size_t size;
 
-        /* Convert the sig.signer to string */
+        /* Convert the bootloader_sig.signer to string */
         hexstr_format(
             signer,
             sizeof(signer),
-            sig.signer,
-            sizeof(sig.signer));
+            bootloader_sig.signer,
+            sizeof(bootloader_sig.signer));
 
         if (cpio_load_file(
             cpio_data, cpio_size, FILENAME_EVENTS, &data, &size) == 0)

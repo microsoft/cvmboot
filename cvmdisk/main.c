@@ -530,16 +530,57 @@ done:
     return ret;
 }
 
+/* Check if a file is a UKI (ends with .efi) */
+static int _is_uki_file(const char* filename)
+{
+    size_t len = strlen(filename);
+    return (len > 4 && strcmp(filename + len - 4, ".efi") == 0);
+}
+
 /* Search for highest-versioned kernel in the /boot directory */
 static int _find_kernel(char path[PATH_MAX], char version[PATH_MAX])
 {
     int ret = 0;
     char dirname[PATH_MAX];
+    strarr_t filenames = STRARR_INITIALIZER;
+    const size_t prefix_len = strlen("vmlinuz-");
+    const char* best_regular = NULL;
+    const char* best_uki = NULL;
 
     *path = '\0';
     *version = '\0';
     strlcpy2(dirname, mntdir(), "/boot", PATH_MAX);
-    ECHECK(_find_uki_or_kernel(dirname, "vmlinuz-", path, version));
+    
+    ECHECK(_glob_directory(dirname, "vmlinuz-", &filenames));
+
+    if (filenames.size == 0)
+        ERAISE(-ENOENT);
+
+    /* Separate regular kernels from UKI files, preferring regular kernels */
+    for (size_t i = 0; i < filenames.size; i++)
+    {
+        printf("Found: %s\n", filenames.data[i]);
+        
+        if (_is_uki_file(filenames.data[i]))
+        {
+            best_uki = filenames.data[i];
+        }
+        else
+        {
+            best_regular = filenames.data[i];
+        }
+    }
+    
+    /* Prefer regular kernel over UKI */
+    const char* selected = best_regular ? best_regular : best_uki;
+    
+    if (!selected)
+        ERAISE(-ENOENT);
+    
+    strlcpy3(path, dirname, "/", selected, PATH_MAX);
+    strlcpy(version, selected + prefix_len, PATH_MAX);
+
+    strarr_release(&filenames);
 
 done:
     return ret;
@@ -604,7 +645,7 @@ static void _install_kernel_onto_esp(const char* disk, char version[PATH_MAX])
             printf("Found UKI: %s\n", path);
 
             /* Extract the kernel from the UKI onto ESP */
-            execf(&buf, "objcopy --dump-section .linux=%s %s", dest, path);
+            execf(&buf, "objcopy --dump-section .linux=%s %s /dev/null", dest, path);
 
             // Also copy kernel to /boot directory (needed by
             // cmdline.boot_image)
@@ -633,7 +674,7 @@ static void _install_kernel_onto_esp(const char* disk, char version[PATH_MAX])
             if (access(path, R_OK) != 0)
                 ERR("unable to read file: %s", path);
 
-            execf(&buf, "objcopy --dump-section .cmdline=%s %s", cmdline, path);
+            execf(&buf, "objcopy --dump-section .cmdline=%s %s /dev/null", cmdline, path);
 
             printf("Created %s\n", cmdline);
         }
@@ -659,8 +700,52 @@ static void _install_kernel_onto_esp(const char* disk, char version[PATH_MAX])
         strlcat(dest, "/vmlinuz-", sizeof(dest));
         strlcat(dest, version, sizeof(dest));
 
-        /* write kernel to ESP */
+        /* Check if this is a UKI file */
+        if (_is_uki_file(path))
         {
+            /* Extract kernel from UKI */
+            char dest2[PATH_MAX];
+            char version_nouki[PATH_MAX];
+
+            if (access(path, R_OK) != 0)
+                ERR("unable to read file: %s", path);
+
+            printf("Using kernel: %s:%s (UKI)\n", globals.disk, strip_mntdir(path));
+
+            /* Extract the kernel from the UKI onto ESP */
+            execf(&buf, "objcopy --dump-section .linux=%s %s /dev/null", dest, path);
+
+            if (access(dest, F_OK) != 0)
+                ERR("failed to extract kernel from UKI: %s", path);
+
+            /* Create a non-UKI version name by removing '-uki' and '.efi' suffix */
+            strlcpy(version_nouki, version, sizeof(version_nouki));
+            char* uki_pos = strstr(version_nouki, "-uki");
+            if (uki_pos) {
+                char* rest = uki_pos + 4; /* skip "-uki" */
+                memmove(uki_pos, rest, strlen(rest) + 1);
+            }
+            /* Remove .efi extension if present */
+            char* efi_pos = strstr(version_nouki, ".efi");
+            if (efi_pos) {
+                *efi_pos = '\0';
+            }
+
+            // Copy extracted kernel to /boot with non-UKI name (needed by cmdline.boot_image)
+            strlcpy2(dest2, mntdir(), "/boot/vmlinuz-", sizeof(dest2));
+            strlcat(dest2, version_nouki, sizeof(dest2));
+            execf(&buf, "rm -f %s", dest2);
+            execf(&buf, "cp %s %s", dest, dest2);
+
+            if (access(dest2, F_OK) != 0)
+                ERR("unable to copy extracted kernel: %s", dest2);
+
+            printf("Created %s:%s (extracted bzImage)\n", globals.disk, strip_mntdir(dest));
+            printf("Created %s:%s (extracted bzImage copy)\n", globals.disk, strip_mntdir(dest2));
+        }
+        else
+        {
+            /* Regular bzImage kernel */
             if (access(path, R_OK) != 0)
                 ERR("unable to read file: %s", path);
 
@@ -740,6 +825,97 @@ static size_t _get_num_sectors(const char* dev)
     return (size_t)n;
 }
 
+/* Detect which initrd system is being used */
+static bool _is_dracut_system(void)
+{
+    char dracut_path[PATH_MAX];
+    
+    strlcpy2(dracut_path, mntdir(), "/usr/bin/dracut", sizeof(dracut_path));
+    
+    /* Check if dracut exists */
+    if (access(dracut_path, X_OK) == 0)
+        return true;
+    
+    return false;
+}
+
+/* Verify required packages for initrd scripts are installed */
+static void _install_required_packages(void)
+{
+    buf_t buf = BUF_INITIALIZER;
+    char tdnf_path[PATH_MAX];
+    char apt_path[PATH_MAX];
+    const char* packages[] = {"cryptsetup", "veritysetup", "util-linux", NULL};
+    bool all_installed = true;
+    
+    printf("Checking for required packages...\n");
+    
+    /* Detect package manager */
+    strlcpy2(tdnf_path, mntdir(), "/usr/bin/tdnf", sizeof(tdnf_path));
+    strlcpy2(apt_path, mntdir(), "/usr/bin/apt-get", sizeof(apt_path));
+    
+    if (access(tdnf_path, X_OK) == 0)
+    {
+        /* Mariner/Azure Linux - use tdnf */
+        printf("Detected tdnf package manager\n");
+        
+        for (int i = 0; packages[i] != NULL; i++)
+        {
+            /* Check if package is installed */
+            int ret = execf_return(&buf, "chroot %s /usr/bin/tdnf list installed %s 2>/dev/null | grep -q %s",
+                                   mntdir(), packages[i], packages[i]);
+            
+            if (ret != 0)
+            {
+                printf("ERROR: Required package '%s' is not installed\n", packages[i]);
+                all_installed = false;
+            }
+            else
+            {
+                printf("Package %s is installed\n", packages[i]);
+            }
+        }
+    }
+    else if (access(apt_path, X_OK) == 0)
+    {
+        /* Debian/Ubuntu - use apt-get */
+        printf("Detected apt-get package manager\n");
+        
+        for (int i = 0; packages[i] != NULL; i++)
+        {
+            /* Check if package is installed */
+            int ret = execf_return(&buf, "chroot %s dpkg -l %s 2>/dev/null | grep -q '^ii'",
+                                   mntdir(), packages[i]);
+            
+            if (ret != 0)
+            {
+                printf("ERROR: Required package '%s' is not installed\n", packages[i]);
+                all_installed = false;
+            }
+            else
+            {
+                printf("Package %s is installed\n", packages[i]);
+            }
+        }
+    }
+    else
+    {
+        printf("Warning: Unknown package manager, cannot verify packages\n");
+        printf("Please ensure cryptsetup, veritysetup, and util-linux are installed\n");
+        buf_release(&buf);
+        return;
+    }
+    
+    buf_release(&buf);
+
+    if (!all_installed)
+    {
+        ERR("Required packages are missing. Please install them before running cvmdisk.");
+    }
+    
+    printf("All required packages are installed\n");
+}
+
 /* Install the Linux initrd onto the EFI system partition */
 static void _install_initrd_onto_esp(
     const char* disk,
@@ -748,100 +924,251 @@ static void _install_initrd_onto_esp(
     bool use_thin_provisioning)
 {
     buf_t buf = BUF_INITIALIZER;
+    bool use_dracut;
 
     printf("%s>>> Updating initrd...%s\n", colors_green, colors_reset);
 
     mount_disk(disk, 0);
 
+    /* Install required packages before generating initrd */
+    _install_required_packages();
+
+    use_dracut = _is_dracut_system();
+    
+    if (use_dracut)
+    {
+        printf("Detected dracut-based system\n");
+    }
+    else
+    {
+        printf("Detected initramfs-tools-based system\n");
+    }
+
     printf("Installing files on target disk...\n");
 
-    /* cleanup any hook files leftover from previous run */
-    _cleanup_sharedir_file("/etc/initramfs-tools/hooks/cvmboot");
-    _cleanup_sharedir_file("/etc/initramfs-tools/hooks/cvmboot-resource-disk");
-    _cleanup_sharedir_file("/etc/initramfs-tools/hooks/cvmboot-thin");
-
-    /* install cvmboot.hook */
-    _install_sharedir_file(
-        "/cvmboot.hook",
-        "/etc/initramfs-tools/hooks/cvmboot");
-
-    /* install cvmboot-resource-disk.hook */
-    if (use_resource_disk)
+    if (use_dracut)
     {
-        _install_sharedir_file(
-            "/cvmboot-resource-disk.hook",
-            "/etc/initramfs-tools/hooks/cvmboot-resource-disk");
-    }
-
-    /* install cvmboot-thin-sectors.hook */
-    if (use_thin_provisioning)
-    {
+        /* Dracut-based system: install dracut modules */
+        path_t module_dir;
         path_t src;
         path_t dest;
-        char* format;
-        size_t format_size;
-        char* content;
         char root_dev[PATH_MAX];
-        size_t num_thin_sectors;
-
-        if (find_gpt_entry_by_linux_root_type(disk, root_dev, NULL) < 0)
-            ERR("Cannot find Linux partition: disk=%s", disk);
-
-        num_thin_sectors = _get_num_sectors(root_dev);
-
-        makepath2(&src, sharedir(), "/cvmboot-thin.hook");
-        makepath2(&dest, mntdir(), "/etc/initramfs-tools/hooks/cvmboot-thin");
-
-        if (load_file(src.buf, (void**)&format, &format_size) != 0)
-            ERR("failed to load file: %s", src.buf);
-
-        if (asprintf(&content, format, num_thin_sectors) < 0)
-            ERR("out of memory");
-
-        if (write_file(dest.buf, content, strlen(content)) < 0)
-            ERR("failed to write file: %s", dest.buf);
-
-        if (chmod(dest.buf, 0755) < 0)
-            ERR("chmod failed: %s", dest.buf);
-
-        free(format);
-        free(content);
+        
+        /* Create dracut module directory */
+        makepath2(&module_dir, mntdir(), "/usr/lib/dracut/modules.d/90cvmboot");
+        execf(&buf, "mkdir -p %s", module_dir.buf);
+        
+        /* Install module-setup.sh */
+        {
+            char* format = NULL;
+            size_t format_size = 0;
+            char* content = NULL;
+            
+            makepath2(&src, sharedir(), "/dracut/module-setup.sh");
+            makepath2(&dest, module_dir.buf, "/module-setup.sh");
+            
+            if (load_file(src.buf, (void**)&format, &format_size) != 0)
+                ERR("failed to load file: %s", src.buf);
+            
+            /* Build the install() function content based on options */
+            char* additions = NULL;
+            char* thin_addition = NULL;
+            char* resource_addition = NULL;
+            
+            if (use_thin_provisioning)
+            {
+                if (find_gpt_entry_by_linux_root_type(disk, root_dev, NULL) < 0)
+                    ERR("Cannot find Linux partition: disk=%s", disk);
+                size_t num_thin_sectors = _get_num_sectors(root_dev);
+                if (asprintf(&thin_addition, 
+                    "    \n    # Thin provisioning support\n"
+                    "    instmods dm_thin_pool\n"
+                    "    echo '%zu' > \"${initdir}/etc/cvmboot-thin-sectors\"\n",
+                    num_thin_sectors) < 0)
+                    ERR("out of memory");
+            }
+            
+            if (use_resource_disk)
+            {
+                if (asprintf(&resource_addition,
+                    "    # Resource disk support\n"
+                    "    inst_multiple parted mkfs.ext4 mkfs.ntfs mount.ntfs truncate losetup\n"
+                    "    echo '1' > \"${initdir}/etc/cvmboot-resource-disk\"\n") < 0)
+                    ERR("out of memory");
+            }
+            
+            /* Combine additions */
+            if (thin_addition && resource_addition)
+            {
+                if (asprintf(&additions, "%s%s", thin_addition, resource_addition) < 0)
+                    ERR("out of memory");
+                free(thin_addition);
+                free(resource_addition);
+            }
+            else if (thin_addition)
+            {
+                additions = thin_addition;
+            }
+            else if (resource_addition)
+            {
+                additions = resource_addition;
+            }
+            
+            /* Insert additions before the closing brace of install() */
+            if (additions)
+            {
+                /* Find the last occurrence of "}\n" (closing brace of install function) */
+                char* install_end = NULL;
+                char* p = format;
+                while ((p = strstr(p, "}\n")) != NULL)
+                {
+                    install_end = p;
+                    p += 2;
+                }
+                
+                if (install_end)
+                {
+                    size_t prefix_len = install_end - format;
+                    if (asprintf(&content, "%.*s%s}\n", 
+                                 (int)prefix_len, format, additions) < 0)
+                        ERR("out of memory");
+                }
+                else
+                {
+                    ERR("Could not add required additions to module-setup.sh: install() function closing brace not found");
+                }
+                free(additions);
+            }
+            else
+            {
+                content = strdup(format);
+            }
+            
+            if (write_file(dest.buf, content, strlen(content)) < 0)
+                ERR("failed to write file: %s", dest.buf);
+            
+            if (chmod(dest.buf, 0755) < 0)
+                ERR("failed to chmod dracut module-setup.sh");
+            
+            printf("Created dracut module: %s\n", strip_mntdir(dest.buf));
+            
+            free(format);
+            free(content);
+        }
+        
+        /* Install cvmboot-cmdline.sh hook */
+        {
+            makepath2(&src, sharedir(), "/dracut/cvmboot-cmdline.sh");
+            makepath2(&dest, module_dir.buf, "/cvmboot-cmdline.sh");
+            execf(&buf, "cp %s %s", src.buf, dest.buf);
+            
+            if (chmod(dest.buf, 0755) < 0)
+                ERR("failed to chmod cvmboot-cmdline.sh");
+        }
+        
+        /* Install cvmboot-premount.sh hook */
+        {
+            makepath2(&src, sharedir(), "/dracut/cvmboot-premount.sh");
+            makepath2(&dest, module_dir.buf, "/cvmboot-premount.sh");
+            execf(&buf, "cp %s %s", src.buf, dest.buf);
+            
+            if (chmod(dest.buf, 0755) < 0)
+                ERR("failed to chmod cvmboot-premount.sh");
+        }
     }
-
-    /* install cvmboot_premount.script */
+    else
     {
+        /* initramfs-tools based system: use existing hook mechanism */
+        
+        /* cleanup any hook files leftover from previous run */
+        _cleanup_sharedir_file("/etc/initramfs-tools/hooks/cvmboot");
+        _cleanup_sharedir_file("/etc/initramfs-tools/hooks/cvmboot-resource-disk");
+        _cleanup_sharedir_file("/etc/initramfs-tools/hooks/cvmboot-thin");
+
+        /* install cvmboot.hook */
         _install_sharedir_file(
-            "/cvmboot_premount.script",
-            "/etc/initramfs-tools/scripts/local-premount/cvmboot_premount");
-    }
+            "/cvmboot.hook",
+            "/etc/initramfs-tools/hooks/cvmboot");
 
-    /* install cvmboot_bottom.script */
-    {
-        char path[PATH_MAX] = "/cvmboot_bottom.script";
-
+        /* install cvmboot-resource-disk.hook */
         if (use_resource_disk)
-            strlcat(path, ".resource-disk", sizeof(path));
+        {
+            _install_sharedir_file(
+                "/cvmboot-resource-disk.hook",
+                "/etc/initramfs-tools/hooks/cvmboot-resource-disk");
+        }
 
-        _install_sharedir_file(
-            path,
-            "/etc/initramfs-tools/scripts/init-bottom/cvmboot_bottom");
-    }
+        /* install cvmboot-thin-sectors.hook */
+        if (use_thin_provisioning)
+        {
+            path_t src;
+            path_t dest;
+            char* format;
+            size_t format_size;
+            char* content;
+            char root_dev[PATH_MAX];
+            size_t num_thin_sectors;
+
+            if (find_gpt_entry_by_linux_root_type(disk, root_dev, NULL) < 0)
+                ERR("Cannot find Linux partition: disk=%s", disk);
+
+            num_thin_sectors = _get_num_sectors(root_dev);
+
+            makepath2(&src, sharedir(), "/cvmboot-thin.hook");
+            makepath2(&dest, mntdir(), "/etc/initramfs-tools/hooks/cvmboot-thin");
+
+            if (load_file(src.buf, (void**)&format, &format_size) != 0)
+                ERR("failed to load file: %s", src.buf);
+
+            if (asprintf(&content, format, num_thin_sectors) < 0)
+                ERR("out of memory");
+
+            if (write_file(dest.buf, content, strlen(content)) < 0)
+                ERR("failed to write file: %s", dest.buf);
+
+            if (chmod(dest.buf, 0755) < 0)
+                ERR("chmod failed: %s", dest.buf);
+
+            free(format);
+            free(content);
+        }
+
+        /* install cvmboot_premount.script */
+        {
+            _install_sharedir_file(
+                "/cvmboot_premount.script",
+                "/etc/initramfs-tools/scripts/local-premount/cvmboot_premount");
+        }
+
+        /* install cvmboot_bottom.script */
+        {
+            char path[PATH_MAX] = "/cvmboot_bottom.script";
+
+            if (use_resource_disk)
+                strlcat(path, ".resource-disk", sizeof(path));
+
+            _install_sharedir_file(
+                path,
+                "/etc/initramfs-tools/scripts/init-bottom/cvmboot_bottom");
+        }
 
 #ifdef USE_EFI_EPHEMERAL_DISK
-    /* install cvmboot_efi.script */
-    {
-        char path[PATH_MAX] = "/cvmboot_efi.script";
+        /* install cvmboot_efi.script */
+        {
+            char path[PATH_MAX] = "/cvmboot_efi.script";
 
-        _install_sharedir_file(
-            path,
-            "/etc/initramfs-tools/scripts/init-bottom/cvmboot_efi");
-    }
+            _install_sharedir_file(
+                path,
+                "/etc/initramfs-tools/scripts/init-bottom/cvmboot_efi");
+        }
 #endif /* USE_EFI_EPHEMERAL_DISK */
+    }
 
     /* Generate initrd.img on the EFI partition */
     {
         char path[PATH_MAX];
         char fullpath[PATH_MAX];
+        char actual_kver[PATH_MAX] = "";
 
         printf("Generating initrd.img for kernel version %s...\n", version);
 
@@ -849,7 +1176,44 @@ static void _install_initrd_onto_esp(
         strlcat(path, "/initrd.img-", sizeof(path));
         strlcat(path, version, sizeof(path));
 
-        execf(&buf, "chroot %s mkinitramfs -o %s %s", mntdir(), path, version);
+        if (use_dracut)
+        {
+            /* For dracut, we need to find the actual kernel version in /lib/modules/ */
+            /* The 'version' might be a UKI filename, not a real kernel version */
+            strarr_t kversions = STRARR_INITIALIZER;
+            char modules_dir[PATH_MAX];
+            
+            strlcpy2(modules_dir, mntdir(), "/lib/modules", sizeof(modules_dir));
+            
+            if (_glob_directory(modules_dir, "", &kversions) == 0 && kversions.size > 0)
+            {
+                /* Use the last (highest) kernel version found */
+                strlcpy(actual_kver, kversions.data[kversions.size - 1], sizeof(actual_kver));
+                printf("Found kernel modules for version: %s\n", actual_kver);
+            }
+            
+            strarr_release(&kversions);
+            
+            /* Use dracut to generate initrd */
+            if (*actual_kver)
+            {
+                /* Use the actual kernel version from /lib/modules/ */
+                execf(&buf, "chroot %s dracut --force --add cvmboot %s %s", 
+                      mntdir(), path, actual_kver);
+            }
+            else
+            {
+                /* No kernel modules found, use --no-kernel flag */
+                printf("Warning: No kernel modules found in /lib/modules/, using --no-kernel\n");
+                execf(&buf, "chroot %s dracut --force --no-kernel --add cvmboot %s", 
+                      mntdir(), path);
+            }
+        }
+        else
+        {
+            /* Use mkinitramfs to generate initrd */
+            execf(&buf, "chroot %s mkinitramfs -o %s %s", mntdir(), path, version);
+        }
 
         strlcpy3(fullpath, mntdir(), "/", path, sizeof(fullpath));
 
@@ -940,21 +1304,30 @@ static void _add_user(const char* disk, const user_opt_t* user)
     {
         printf("Creating user: %s\n", user->username);
 
+        // Create user without password first
+        execf(&buf, "chroot %s useradd -m %s", mntdir(), user->username);
+
+        // Set password using chpasswd (accepts plaintext)
         if (pw)
         {
             execf(&buf,
-                "chroot %s useradd %s -p '%s'", mntdir(), user->username, pw);
+                "echo '%s:%s' | chroot %s chpasswd", user->username, pw, mntdir());
+        }
+
+        execf(&buf, "chroot %s chown -R %s:%s /home/%s",
+            mntdir(), user->username, user->username, user->username);
+        
+        // Add user to sudoers group (distro-dependent)
+        if (_is_dracut_system())
+        {
+            // Fedora/RHEL/Azure Linux use 'wheel' group
+            execf(&buf, "chroot %s usermod -aG wheel %s", mntdir(), user->username);
         }
         else
         {
-            execf(&buf, "chroot %s useradd %s", mntdir(), user->username);
+            // Ubuntu/Debian use 'sudo' group
+            execf(&buf, "chroot %s adduser %s sudo", mntdir(), user->username);
         }
-
-        execf(&buf, "chroot %s mkdir -p /home/%s", mntdir(), user->username);
-        execf(&buf, "chroot %s chown -R %s.%s /home/%s",
-            mntdir(), user->username, user->username, user->username);
-        // execf(&buf, "chroot %s usermod -aG sudo %s", mntdir(), username);
-        execf(&buf, "chroot %s adduser %s sudo", mntdir(), user->username);
     }
 
     /* add ssh-key to authorized keys */
@@ -967,7 +1340,7 @@ static void _add_user(const char* disk, const user_opt_t* user)
 
         execf(&buf, "mkdir -p %s/home/%s/.ssh", mntdir(), user->username);
 
-        execf(&buf, "chroot %s chown -R %s.%s /home/%s/.ssh",
+        execf(&buf, "chroot %s chown -R %s:%s /home/%s/.ssh",
             mntdir(), user->username, user->username, user->username);
 
         /* if authorized_keys already exists */
@@ -1160,8 +1533,7 @@ done:
 
 static void _append_cmdline_option(
     const char* disk,
-    const char* version,
-    bool force_hyperv_console)
+    bool enable_serial_console)
 {
     buf_t buf = BUF_INITIALIZER;
     buf_t boot_image = BUF_INITIALIZER;
@@ -1205,9 +1577,9 @@ static void _append_cmdline_option(
     }
 
     /* Format the linux_cmdline */
-    if (!force_hyperv_console && strstr(version, "-azure"))
+    if (enable_serial_console)
     {
-        /* Add special console parameters for azure images */
+        /* Add params for serial console enablement */
         if (asprintf(
             &linux_cmdline,
             "BOOT_IMAGE=%s root=UUID=%s ro console=tty1 console=ttyS0\n",
@@ -1883,9 +2255,105 @@ static void _punch_hole(const char* path, size_t offset, size_t len)
         ERR("failed to open: %s", path);
 
     if (fallocate(fd, mode, offset, len) < 0)
-        ERR("fallocate() failed: error=%d", errno);
+    {
+        if (errno == EOPNOTSUPP)
+        {
+            printf("Warning: fallocate() not supported on this filesystem (e.g., WSL), skipping hole punching\n");
+        }
+        else
+        {
+            ERR("fallocate() failed: error=%d", errno);
+        }
+    }
 
     close(fd);
+}
+
+static void _shrink_root_partition(const char* disk)
+{
+    int part_index;
+    char source[PATH_MAX];
+    buf_t buf = BUF_INITIALIZER;
+    size_t ext4_block_size;
+    size_t ext4_block_count;
+    size_t desired_block_count;
+    size_t desired_bytes;
+    size_t desired_sectors;
+    const size_t gb = 1024*1024*1024;
+    const size_t free_space_gb = 2; /* Leave 2GB free space */
+
+    printf("%s>>> Shrinking root partition to minimum + 2GB free space...%s\n",
+        colors_green, colors_reset);
+
+    /* find the Linux root partition */
+    if ((part_index = find_gpt_entry_by_linux_root_type(disk, source, NULL)) < 0)
+        ERR("Cannot find rootfs partition: disk=%s", disk);
+
+    /* Check whether rootfs is valid */
+    if (__test_ext4_rootfs(source) < 0)
+        ERR("partition is not an EXT4 rootfs partition: %s", source);
+
+    /* Run fsck on the EXT4 partition */
+    execf(&buf, "e2fsck -f -y %s 2> /dev/null", source);
+
+    /* Get current filesystem block size */
+    ext4_block_size = _get_ext4_block_size(source);
+    
+    /* Shrink filesystem to minimum size first */
+    printf("Shrinking filesystem to minimum size (%s)...\n", source);
+    execf(&buf, "resize2fs -f -M %s 2> /dev/null", source);
+    
+    /* Run fsck again */
+    execf(&buf, "e2fsck -f -y %s 2> /dev/null", source);
+    
+    /* Get the new minimum block count after shrinking */
+    ext4_block_count = _get_ext4_block_count(source);
+    
+    /* Calculate desired size: minimum + 2GB free space, rounded to 4096 boundary */
+    desired_block_count = ext4_block_count + ((free_space_gb * gb) / ext4_block_size);
+    desired_bytes = desired_block_count * ext4_block_size;
+    desired_bytes = round_up_to_multiple(desired_bytes, 4096);
+    desired_sectors = desired_bytes / GPT_SECTOR_SIZE;
+    
+    printf("Shrinking filesystem to %zuGB (minimum + %zuGB margin)...\n",
+        desired_bytes / gb, free_space_gb);
+    
+    /* Expand filesystem slightly to add margin */
+    execf(&buf, "resize2fs -f %s %zu 2> /dev/null", source, desired_block_count);
+    
+    /* Run fsck */
+    execf(&buf, "e2fsck -f -y %s 2> /dev/null", source);
+    
+    /* Now shrink the partition to match */
+    {
+        gpt_t* gpt;
+        gpt_entry_t entry;
+        size_t old_size_gb;
+        
+        printf("Shrinking root partition (%s)...\n", source);
+        
+        /* Open the GUID partition table */
+        if (gpt_open(disk, O_RDWR | O_EXCL, &gpt) < 0)
+            ERR("failed to open the GUID partition table: %s", disk);
+        
+        /* Get current partition size for logging */
+        if (gpt_get_entry(gpt, part_index, &entry) < 0)
+            ERR("failed to get GPT entry");
+        
+        old_size_gb = ((entry.ending_lba - entry.starting_lba + 1) * GPT_SECTOR_SIZE) / gb;
+        
+        /* Shrink the partition using the GPT API */
+        if (gpt_shrink_partition(gpt, part_index, desired_sectors) < 0)
+            ERR("failed to shrink partition: %s: part=%d", disk, part_index);
+        
+        /* Close the GUID partition table */
+        gpt_close(gpt);
+        
+        printf("Root partition successfully shrunk from %zuGB to %zuGB\n",
+            old_size_gb, desired_bytes / gb);
+    }
+    
+    buf_release(&buf);
 }
 
 static void _add_extra_partitions(
@@ -1929,7 +2397,9 @@ static void _add_extra_partitions(
 
     /* Need extra space for upper layer disk */
     if (!use_resource_disk)
+    {
         extra_space += ext4_bytes;
+    }
 
     /* Calculate space needed for thin partition */
     if (use_thin_provisioning)
@@ -2624,7 +3094,7 @@ static void _verify_disk(const char* disk)
     gpt_close(gpt);
 }
 
-static int _strip_disk(const char* disk, const char* vhd_file)
+static int _strip_disk(const char* disk, const char* vhd_file, bool use_thin_provisioning)
 {
     size_t total_bytes = 0;
     buf_t buf = BUF_INITIALIZER;
@@ -2646,7 +3116,8 @@ static int _strip_disk(const char* disk, const char* vhd_file)
     /* Fixup the GPT */
     _fixup_gpt(disk);
 
-    /* Refuse to strip disks that have no thin partitions */
+    /* Refuse to strip disks that have no thin partitions (only if thin provisioning is enabled) */
+    if (use_thin_provisioning)
     {
         if (find_gpt_entry_by_type(disk, &thin_data_type_guid, NULL, NULL) < 0)
             ERR("Refusing to strip disk that has no thin data partition");
@@ -2866,7 +3337,7 @@ static int _strip_disk(const char* disk, const char* vhd_file)
 }
 
 /* assumes loop device is already setup for disk */
-static void _strip_disk_in_place(const char* disk)
+static void _strip_disk_in_place(const char* disk, bool use_thin_provisioning)
 {
     char fullpath[PATH_MAX];
     char tmpfile[PATH_MAX];
@@ -2879,7 +3350,7 @@ static void _strip_disk_in_place(const char* disk)
     if (mkstemp(tmpfile) < 0)
         ERR("failed to create temporary file: %s", tmpfile);
 
-    _strip_disk(disk, tmpfile);
+    _strip_disk(disk, tmpfile, use_thin_provisioning);
 
     if (*globals.loop)
     {
@@ -3186,8 +3657,9 @@ static void _prepare_disk(
     bool use_thin_provisioning,
     bool verify,
     bool expand_root_partition,
+    bool shrink_root,
     bool no_strip,
-    bool force_hyperv_console)
+    bool enable_serial_console)
 {
     char version[PATH_MAX] = "";
 
@@ -3242,7 +3714,7 @@ static void _prepare_disk(
     _install_bootloader(disk, events);
 
     // Install Linux cmdline file onto EFI partition:
-    _append_cmdline_option(disk, version, force_hyperv_console);
+    _append_cmdline_option(disk, enable_serial_console);
 
     // Add user:
     if (*user->username)
@@ -3255,6 +3727,10 @@ static void _prepare_disk(
     // Purge any extra partition created before:
     _purge_disk(disk, true, true);
 
+    // Shrink root partition if requested to free up space for extra partitions:
+    if (shrink_root)
+        _shrink_root_partition(disk);
+
     _add_extra_partitions(disk, use_thin_provisioning, use_resource_disk,
         verify);
 
@@ -3263,7 +3739,7 @@ static void _prepare_disk(
 
     // Remove uneededpartitions:
     if (!no_strip)
-        _strip_disk_in_place(disk);
+        _strip_disk_in_place(disk, use_thin_provisioning);
 }
 
 /*
@@ -3303,6 +3779,10 @@ Options:\n\
         rootfs partition.\n\
     --no-strip\n\
         Do not strip the EXT4 rootfs partition.\n\
+    --force\n\
+        Enable in-place processing: allows input-disk == output-disk and\n\
+        bypasses state validation. Skips the copy operation for faster\n\
+        iteration during testing.\n\
 \n\
 Description:\n\
     This subcommand prepares a VM disk image for integrity protection by\n\
@@ -3343,8 +3823,10 @@ static int _subcommand_prepare(
     bool use_thin_provisioning,
     bool verify,
     bool expand_root_partition,
+    bool shrink_root,
     bool no_strip,
-    bool force_hyperv_console)
+    bool enable_serial_console,
+    bool force)
 {
     const char* input_disk = NULL;
     const char* output_disk = NULL;
@@ -3360,26 +3842,41 @@ static int _subcommand_prepare(
     output_disk = argv[3];
     _check_vhd(input_disk);
 
-    if (_same_file(input_disk, output_disk))
+    bool same_file = _same_file(input_disk, output_disk);
+
+    if (same_file && !force)
     {
-        ERR("input-disk and output-disk refer to the same file: %s %s\n",
+        ERR("input-disk and output-disk refer to the same file: %s %s\n"
+            "Use --force for in-place processing",
             input_disk, output_disk);
     }
 
-    switch (_get_image_state(input_disk))
+    if (!force)
     {
-        case IMAGE_STATE_BASE:
-            break;
-        case IMAGE_STATE_PREPARED:
-            ERR("disk has already been prepared: %s", input_disk);
-        case IMAGE_STATE_PROTECTED:
-            ERR("disk has already been protected: %s", input_disk);
-        case IMAGE_STATE_UNKNOWN:
-            ERR("unknown disk state: %s", input_disk);
+        switch (_get_image_state(input_disk))
+        {
+            case IMAGE_STATE_BASE:
+                break;
+            case IMAGE_STATE_PREPARED:
+                ERR("disk has already been prepared: %s\n"
+                    "Use --force to reprocess", input_disk);
+            case IMAGE_STATE_PROTECTED:
+                ERR("disk has already been protected: %s", input_disk);
+            case IMAGE_STATE_UNKNOWN:
+                ERR("unknown disk state: %s", input_disk);
+        }
     }
 
-    if (sparse_copy(input_disk, output_disk) < 0)
-        ERR("copy failed: %s => %s\n", input_disk, output_disk);
+    /* Skip copy if processing in-place with --force */
+    if (same_file && force)
+    {
+        printf("In-place processing enabled (--force): skipping copy\n");
+    }
+    else
+    {
+        if (sparse_copy(input_disk, output_disk) < 0)
+            ERR("copy failed: %s => %s\n", input_disk, output_disk);
+    }
 
     globals.disk = output_disk;
     losetup(globals.disk, globals.loop);
@@ -3390,7 +3887,7 @@ static int _subcommand_prepare(
 
     _prepare_disk(disk, user, hostname, events, skip_resolv_conf,
         use_resource_disk, use_thin_provisioning, verify,
-        expand_root_partition, no_strip, force_hyperv_console);
+        expand_root_partition, shrink_root, no_strip, enable_serial_console);
 
     return 0;
 }
@@ -3507,6 +4004,10 @@ Options:\n\
         Verify the verity and thin partitions.\n\
     --no-strip\n\
         Do not strip the EXT4 rootfs partition.\n\
+    --force\n\
+        Enable in-place processing: allows input-disk == output-disk and\n\
+        bypasses state validation. Skips the copy operation for faster\n\
+        iteration during testing.\n\
 \n\
 Description:\n\
     This subcommand both prepares and protects a VM disk image. It is\n\
@@ -3526,8 +4027,10 @@ static int _subcommand_init(
     bool use_thin_provisioning,
     bool verify,
     bool expand_root_partition,
+    bool shrink_root,
     bool no_strip,
-    bool force_hyperv_console)
+    bool enable_serial_console,
+    bool force)
 {
     const char* input_disk = NULL;
     const char* output_disk = NULL;
@@ -3547,26 +4050,41 @@ static int _subcommand_init(
     signtool = argv[4];
     _check_vhd(input_disk);
 
-    if (_same_file(input_disk, output_disk))
+    bool same_file = _same_file(input_disk, output_disk);
+
+    if (same_file && !force)
     {
-        ERR("input-disk and output-disk refer to the same file: %s %s\n",
+        ERR("input-disk and output-disk refer to the same file: %s %s\n"
+            "Use --force for in-place processing",
             input_disk, output_disk);
     }
 
-    switch (_get_image_state(input_disk))
+    if (!force)
     {
-        case IMAGE_STATE_BASE:
-            break;
-        case IMAGE_STATE_PREPARED:
-            ERR("disk has already been prepared: %s", input_disk);
-        case IMAGE_STATE_PROTECTED:
-            ERR("disk has already been protected: %s", input_disk);
-        case IMAGE_STATE_UNKNOWN:
-            ERR("unknown disk state: %s", input_disk);
+        switch (_get_image_state(input_disk))
+        {
+            case IMAGE_STATE_BASE:
+                break;
+            case IMAGE_STATE_PREPARED:
+                ERR("disk has already been prepared: %s\n"
+                    "Use --force to reprocess", input_disk);
+            case IMAGE_STATE_PROTECTED:
+                ERR("disk has already been protected: %s", input_disk);
+            case IMAGE_STATE_UNKNOWN:
+                ERR("unknown disk state: %s", input_disk);
+        }
     }
 
-    if (sparse_copy(input_disk, output_disk) < 0)
-        ERR("copy failed: %s => %s\n", input_disk, output_disk);
+    /* Skip copy if processing in-place with --force */
+    if (same_file && force)
+    {
+        printf("In-place processing enabled (--force): skipping copy\n");
+    }
+    else
+    {
+        if (sparse_copy(input_disk, output_disk) < 0)
+            ERR("copy failed: %s => %s\n", input_disk, output_disk);
+    }
 
     globals.disk = output_disk;
     losetup(globals.disk, globals.loop);
@@ -3588,7 +4106,7 @@ static int _subcommand_init(
 
     _prepare_disk(disk, user, hostname, events, skip_resolv_conf,
         use_resource_disk, use_thin_provisioning, verify,
-        expand_root_partition, no_strip, force_hyperv_console);
+        expand_root_partition, shrink_root, no_strip, enable_serial_console);
 
     // Protect the disk:
     globals.disk = output_disk;
@@ -4193,8 +4711,10 @@ int main(int argc, const char* argv[])
         const char* events = NULL;
         const char* opt;
         bool expand_root_partition = false;
+        bool shrink_root = false;
         bool no_strip = false;
-        bool force_hyperv_console = false;
+        bool enable_serial_console = false;
+        bool force = false;
 
         memset(&user, 0, sizeof(user));
         memset(&hostname, 0, sizeof(hostname));
@@ -4203,8 +4723,11 @@ int main(int argc, const char* argv[])
         if (getoption(&argc, argv, "--no-strip", NULL, &err) == 0)
             no_strip = true;
 
-        if (getoption(&argc, argv, "--force-hyperv-console", NULL, &err) == 0)
-            force_hyperv_console = true;
+        if (getoption(&argc, argv, "--enable-serial-console", NULL, &err) == 0)
+            enable_serial_console = true;
+
+        if (getoption(&argc, argv, "--force", NULL, &err) == 0)
+            force = true;
 
         if (getoption(&argc, argv, "--skip-resolv-conf", NULL, &err) == 0)
             skip_resolv_conf = true;
@@ -4242,7 +4765,7 @@ int main(int argc, const char* argv[])
 
         return _subcommand_prepare(argc, argv, &user, &hostname, events,
             skip_resolv_conf, use_resource_disk, use_thin_provisioning,
-            verify, expand_root_partition, no_strip, force_hyperv_console);
+            verify, expand_root_partition, shrink_root, no_strip, enable_serial_console, force);
     }
     else if (strcmp(subcommand, "protect") == 0)
     {
@@ -4278,8 +4801,10 @@ int main(int argc, const char* argv[])
         bool use_thin_provisioning = true;
         bool verify = false;
         bool expand_root_partition = false;
+        bool shrink_root = false;
         bool no_strip = false;
-        bool force_hyperv_console = false;
+        bool enable_serial_console = false;
+        bool force = false;
 
         memset(&user, 0, sizeof(user));
         memset(&hostname, 0, sizeof(hostname));
@@ -4287,6 +4812,9 @@ int main(int argc, const char* argv[])
 
         if (getoption(&argc, argv, "--delta", NULL, &err) == 0)
             delta = true;
+
+        if (getoption(&argc, argv, "--force", NULL, &err) == 0)
+            force = true;
 
         if (getoption(&argc, argv, "--skip-resolv-conf", NULL, &err) == 0)
             skip_resolv_conf = true;
@@ -4303,11 +4831,14 @@ int main(int argc, const char* argv[])
         if (getoption(&argc, argv, "--no-strip", NULL, &err) == 0)
             no_strip = true;
 
-        if (getoption(&argc, argv, "--force-hyperv-console", NULL, &err) == 0)
-            force_hyperv_console = true;
+        if (getoption(&argc, argv, "--enable-serial-console", NULL, &err) == 0)
+            enable_serial_console = true;
 
         if (getoption(&argc, argv, "--expand-root-partition", NULL, &err) == 0)
             expand_root_partition = true;
+
+        if (getoption(&argc, argv, "--shrink-root", NULL, &err) == 0)
+            shrink_root = true;
 
         /* get the --user option */
         _get_user_option(&argc, argv, &user);
@@ -4341,7 +4872,7 @@ int main(int argc, const char* argv[])
 
         return _subcommand_init(argc, argv, &user, &hostname, events, delta,
             skip_resolv_conf, use_resource_disk, use_thin_provisioning,
-            verify, expand_root_partition, no_strip, force_hyperv_console);
+            verify, expand_root_partition, shrink_root, no_strip, enable_serial_console, force);
     }
     else if (strcmp(subcommand, "state") == 0)
     {
